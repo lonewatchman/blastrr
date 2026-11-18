@@ -125,6 +125,13 @@
 
     <main hidden>
         <!-- 1. TRADE TERMINAL VIEW (SPOT + PERPETUALS) -->
+        <aside id="wallet-security-warning" class="wallet-security-warning" role="alert" hidden>
+            <div>
+                <strong>Trading and chart access are temporarily disabled for this wallet.</strong>
+                <p>Re-sign on every active wallet session. After the 15-minute security cool-off and once all sessions have reauthenticated, access restores automatically. Closing or flattening existing positions remains available.</p>
+            </div>
+            <button type="button" class="btn-wallet" onclick="switchView('profileView'); switchProfileSection('profile-support-panel')">Need help? Create a support ticket</button>
+        </aside>
         <section id="tradeView" class="view-panel active">
             <div class="trade-grid">
                 <div>

@@ -32,6 +32,17 @@ const { isLimitOrderTriggered } = require('./limitOrderRules');
 const { calculateTradePerformance } = require('./performanceRules');
 const { MarketDataService } = require('./marketDataService');
 const { createMarketDataProviders } = require('./marketDataProviders');
+const {
+  SESSION_LIMIT_PER_IP,
+  SESSION_IDLE_TIMEOUT_MS,
+  hashSessionToken,
+  createRateLimiter,
+  registerWalletSession,
+  getWalletSecurityStatus,
+  markWalletSessionReauthenticated,
+  clearWalletSecurityLock,
+  cleanupExpiredWalletSessions
+} = require('./ipSecurity');
 
 const app = express();
 const PORT = process.env.PORT || 4480;
@@ -93,7 +104,6 @@ app.use(express.json({ limit: '32kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 // --- 2. IP-BASED RATE LIMITER & BINANCE CACHE ---
-const requestMap = new Map();
 const copyFlatteningWallets = new Set();
 const inFlightTradeExecutions = new Map();
 const tradeExecutionWaiters = new Map();
@@ -126,34 +136,11 @@ function waitForTradeExecutions(walletAddress, callback) {
   tradeExecutionWaiters.set(walletAddress, waiters);
 }
 
-function createRateLimiter(maxRequests = 40, windowMs = 60000) {
-    return (req, res, next) => {
-        const clientIp = req.ip || 'unknown';
-        const now = Date.now();
-
-        if (!requestMap.has(clientIp)) {
-            requestMap.set(clientIp, { count: 1, windowStart: now });
-            return next();
-        }
-
-        const data = requestMap.get(clientIp);
-        if (now - data.windowStart > windowMs) {
-            data.count = 1;
-            data.windowStart = now;
-            return next();
-        }
-
-        data.count++;
-        if (data.count > maxRequests) {
-            console.warn(`[RATE LIMIT] Blocked IP ${clientIp} for exceeding ${maxRequests} requests.`);
-            return res.status(429).json({ success: false, error: "Too many requests from your IP. Please slow down." });
-        }
-
-        next();
-    };
-}
-
 const sensitiveLimiter = createRateLimiter(30, 60000);
+const challengeLimiter = createRateLimiter(10, 60000);
+const walletSessionLimiter = createRateLimiter(10, 60000, req => `${req.ip || 'unknown'}:${req.walletAddress || 'unknown'}`);
+const walletActionLimiter = createRateLimiter(30, 60000, req => req.walletAddress || 'unknown');
+const chartLimiter = createRateLimiter(120, 60000, req => `${req.ip || 'unknown'}:${req.walletAddress || 'unknown'}`);
 
 function seedPlans() {
   const initializeRewards = () => db.run(
@@ -253,11 +240,16 @@ function seedPlans() {
 setTimeout(seedPlans, 1000);
 
 const tradeChallenges = new Map();
-const walletSessions = new Map();
 const WALLET_SESSION_DURATION_MS = 12 * 60 * 60 * 1000;
 const LOGIN_IP_RETENTION_DAYS = 180;
 setTimeout(cleanupExpiredLoginIpEvents, 5000);
 setInterval(cleanupExpiredLoginIpEvents, 24 * 60 * 60 * 1000);
+setTimeout(() => cleanupExpiredWalletSessions(db, err => {
+  if (err) console.error('Unable to expire wallet sessions:', err.message);
+}), 5000);
+setInterval(() => cleanupExpiredWalletSessions(db, err => {
+  if (err) console.error('Unable to expire wallet sessions:', err.message);
+}), 60 * 1000);
 const forexChartHistoryCache = new Map();
 const marketPriceStreamClients = new Set();
 const forexChartTimeframes = Object.freeze({
@@ -502,27 +494,76 @@ function requireTradeSignature(req, res, next) {
   } catch {
     return res.status(401).json({ error: 'Wallet signature is invalid.' });
   }
+  req.walletAddress = key;
   next();
 }
 
 function requireWalletSession(req, res, next) {
   const authorization = req.get('authorization') || '';
   const match = /^Bearer ([a-f0-9]{64})$/.exec(authorization);
-  const session = match && walletSessions.get(match[1]);
-  if (!session || session.expiresAt <= Date.now()) {
-    if (match) walletSessions.delete(match[1]);
+  if (!match) {
     return res.status(401).json({ error: 'A valid wallet session is required.' });
   }
-  const requestedWallet = req.body?.wallet_address || req.query.wallet;
-  if (requestedWallet && (
-    typeof requestedWallet !== 'string' ||
-    !ethers.isAddress(requestedWallet) ||
-    requestedWallet.toLowerCase() !== session.walletAddress
-  )) {
-    return res.status(403).json({ error: 'Wallet session does not match the requested wallet.' });
-  }
-  req.walletAddress = session.walletAddress;
-  next();
+  const tokenHash = hashSessionToken(match[1]);
+  db.get(
+    `SELECT wallet_address, ip_address, reauthenticated_at, last_seen_at FROM wallet_sessions
+     WHERE token_hash = ? AND expires_at > ? AND last_seen_at > ? AND revoked_at IS NULL`,
+    [tokenHash, Date.now(), Date.now() - SESSION_IDLE_TIMEOUT_MS],
+    (err, session) => {
+      if (err) return res.status(500).json({ error: 'Unable to verify wallet session.' });
+      if (!session) return res.status(401).json({ error: 'A valid wallet session is required.' });
+      const requestedWallet = req.body?.wallet_address || req.query.wallet;
+      if (requestedWallet && (
+        typeof requestedWallet !== 'string' ||
+        !ethers.isAddress(requestedWallet) ||
+        requestedWallet.toLowerCase() !== session.wallet_address.toLowerCase()
+      )) {
+        return res.status(403).json({ error: 'Wallet session does not match the requested wallet.' });
+      }
+      db.run('UPDATE wallet_sessions SET last_seen_at = ? WHERE token_hash = ?', [Date.now(), tokenHash], touchErr => {
+        if (touchErr) return res.status(500).json({ error: 'Unable to refresh wallet session.' });
+        req.walletAddress = session.wallet_address.toLowerCase();
+        req.walletSessionIp = session.ip_address;
+        req.walletSessionTokenHash = tokenHash;
+        req.walletSessionReauthenticatedAt = session.reauthenticated_at;
+        req.walletSessionIdleMs = Math.max(0, Date.now() - Number(session.last_seen_at));
+        next();
+      });
+    }
+  );
+}
+
+function requireWalletNotSoftLocked(req, res, next) {
+  getWalletSecurityStatus(db, req.walletAddress, req.walletSessionTokenHash, (err, status) => {
+    if (err) return res.status(500).json({ error: 'Unable to verify wallet security status.' });
+    if (!status.softLocked) return next();
+    req.walletSecurityLock = status.lock;
+    res.set('X-Wallet-Soft-Locked', 'true');
+    if (status.reauthenticationRequired) res.set('X-Wallet-Reauthentication-Required', 'true');
+    res.status(423).json({
+      error: 'Trading and chart access are temporarily disabled for this wallet. Create a support ticket for review.',
+      wallet_soft_locked: true,
+      locked_at: status.lock.locked_at,
+      reauthentication_required: status.reauthenticationRequired
+    });
+  });
+}
+
+function requireWalletNotSoftLockedForNewCopyActions(req, res, next) {
+  if (req.body?.active !== true) return next();
+  requireWalletNotSoftLocked(req, res, next);
+}
+
+function requireSameWalletReauthentication(req, res, next) {
+  const sessionWallet = req.walletAddress;
+  requireTradeSignature(req, res, () => {
+    const signedWallet = req.walletAddress;
+    req.walletAddress = sessionWallet;
+    if (signedWallet !== sessionWallet) {
+      return res.status(403).json({ error: 'The signed wallet does not match this wallet session.' });
+    }
+    next();
+  });
 }
 
 function requireUserNotSuspended(req, res, next) {
@@ -1325,7 +1366,7 @@ async function verifyMultiChainPurchase(txHash, chainId, expectedBuyerWallet, ex
 
 // --- API ROUTES ---
 
-app.post('/api/auth/trade-challenge', sensitiveLimiter, (req, res) => {
+app.post('/api/auth/trade-challenge', sensitiveLimiter, challengeLimiter, (req, res) => {
   const wallet = req.body?.wallet_address;
   if (typeof wallet !== 'string' || !ethers.isAddress(wallet)) {
     return res.status(400).json({ error: 'A valid wallet address is required.' });
@@ -1347,16 +1388,9 @@ app.post('/api/auth/trade-challenge', sensitiveLimiter, (req, res) => {
   res.json({ challenge: message });
 });
 
-app.post('/api/auth/wallet-session', sensitiveLimiter, requireTradeSignature, (req, res) => {
-  const now = Date.now();
-  for (const [token, session] of walletSessions) {
-    if (session.expiresAt <= now) walletSessions.delete(token);
-  }
-  if (walletSessions.size >= 5000) {
-    return res.status(503).json({ error: 'Wallet sessions are temporarily unavailable.' });
-  }
+app.post('/api/auth/wallet-session', sensitiveLimiter, requireTradeSignature, walletSessionLimiter, (req, res) => {
   const token = crypto.randomBytes(32).toString('hex');
-  const expiresAt = now + WALLET_SESSION_DURATION_MS;
+  const expiresAt = Date.now() + WALLET_SESSION_DURATION_MS;
   const wallet = req.body.wallet_address.toLowerCase();
   const ipAddress = req.ip || 'unknown';
   recordWalletLogin(wallet, ipAddress, (loginErr, login) => {
@@ -1364,8 +1398,53 @@ app.post('/api/auth/wallet-session', sensitiveLimiter, requireTradeSignature, (r
       console.error('Unable to record wallet login IP:', loginErr.message);
       return res.status(500).json({ error: 'Unable to record login security details.' });
     }
-    walletSessions.set(token, { walletAddress: wallet, expiresAt });
-    res.json({ token, expires_at: expiresAt, new_ip: login.isNewIp });
+    registerWalletSession(db, { token, walletAddress: wallet, ipAddress, expiresAt }, (sessionErr, session) => {
+      if (sessionErr) {
+        if (sessionErr.code === 'SESSION_CAPACITY') {
+          return res.status(503).json({ error: 'Wallet sessions are temporarily unavailable.' });
+        }
+        console.error('Unable to persist wallet session:', sessionErr.message);
+        return res.status(500).json({ error: 'Unable to establish a wallet session.' });
+      }
+      if (session.softLocked) disconnectMarketDataStreams(wallet);
+      res.json({
+        token,
+        expires_at: expiresAt,
+        new_ip: login.isNewIp,
+        wallet_soft_locked: session.softLocked
+      });
+    });
+  });
+});
+
+app.post('/api/auth/wallet-session/reauthorize', sensitiveLimiter, requireWalletSession, requireSameWalletReauthentication, walletSessionLimiter, (req, res) => {
+  markWalletSessionReauthenticated(db, req.walletSessionTokenHash, req.walletAddress, (err, status) => {
+    if (err?.code === 'SESSION_INVALID') return res.status(401).json({ error: 'A valid wallet session is required.' });
+    if (err) {
+      console.error('Unable to reauthorize wallet session:', err.message);
+      return res.status(500).json({ error: 'Unable to reauthorize wallet session.' });
+    }
+    if (status.softLocked) disconnectMarketDataStreams(req.walletAddress);
+    res.json({
+      wallet_soft_locked: status.softLocked,
+      reauthentication_required: status.reauthenticationRequired,
+      active_session_count: status.activeSessionCount || 0,
+      reauthenticated_session_count: status.reauthenticatedSessionCount || 0
+    });
+  });
+});
+
+app.get('/api/user/security-status', requireWalletSession, (req, res) => {
+  getWalletSecurityStatus(db, req.walletAddress, req.walletSessionTokenHash, (err, status) => {
+    if (err) return res.status(500).json({ error: 'Unable to load wallet security status.' });
+    if (status.softLocked) res.set('X-Wallet-Soft-Locked', 'true');
+    res.json({
+      wallet_soft_locked: status.softLocked,
+      locked_at: status.lock?.locked_at || null,
+      reauthentication_required: status.reauthenticationRequired,
+      active_session_count: status.activeSessionCount || 0,
+      reauthenticated_session_count: status.reauthenticatedSessionCount || 0
+    });
   });
 });
 
@@ -3772,6 +3851,13 @@ app.post('/api/admin/users/search', sensitiveLimiter, requireTradeSignature, req
   db.all(
     `SELECT u.wallet_address, u.username, u.created_at,
             COALESCE(u.admin_suspended, 0) AS admin_suspended, u.admin_suspend_reason,
+            (SELECT l.locked_at FROM wallet_security_locks l
+             WHERE LOWER(l.wallet_address) = LOWER(u.wallet_address) AND l.cleared_at IS NULL
+             ORDER BY l.id DESC LIMIT 1) AS security_locked_at,
+            (SELECT i.ip_address FROM wallet_security_locks l
+             JOIN ip_security_incidents i ON i.id = l.incident_id
+             WHERE LOWER(l.wallet_address) = LOWER(u.wallet_address) AND l.cleared_at IS NULL
+             ORDER BY l.id DESC LIMIT 1) AS security_lock_ip,
             (SELECT COUNT(*) FROM user_login_ip_events li
              WHERE LOWER(li.wallet_address) = LOWER(u.wallet_address) AND li.is_new_ip = 1
                AND li.created_at >= datetime('now', '-180 days')) AS new_ip_count,
@@ -3794,9 +3880,20 @@ app.post('/api/admin/users/action', sensitiveLimiter, requireTradeSignature, req
   const { user_wallet: wallet, action } = req.body;
   const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
   if (typeof wallet !== 'string' || !ethers.isAddress(wallet) ||
-      !['SUSPEND', 'RESTORE'].includes(action) ||
+      !['SUSPEND', 'RESTORE', 'CLEAR_IP_SOFT_LOCK'].includes(action) ||
       (action === 'SUSPEND' && (!reason || reason.length > 500))) {
     return res.status(400).json({ error: 'Choose a valid user, action, and a suspension reason (up to 500 characters).' });
+  }
+  if (action === 'CLEAR_IP_SOFT_LOCK') {
+    if (reason.length > 500) return res.status(400).json({ error: 'The review note must be 500 characters or fewer.' });
+    return clearWalletSecurityLock(db, wallet, req.walletAddress, reason, (clearErr, result) => {
+      if (clearErr) {
+        console.error('Unable to clear wallet security lock:', clearErr.message);
+        return res.status(500).json({ error: 'Unable to clear wallet security lock.' });
+      }
+      if (!result.cleared) return res.status(404).json({ error: 'No active IP security lock exists for this wallet.' });
+      res.json({ success: true, message: 'Wallet security lock cleared after review.' });
+    });
   }
   const suspended = action === 'SUSPEND' ? 1 : 0;
   db.serialize(() => {
@@ -4056,7 +4153,7 @@ app.get('/api/trade-copy/groups', requireWalletSession, (req, res) => {
   );
 });
 
-app.post('/api/trade-copy/groups', sensitiveLimiter, requireWalletSession, requireUserNotSuspended, (req, res) => {
+app.post('/api/trade-copy/groups', sensitiveLimiter, requireWalletSession, walletActionLimiter, requireWalletNotSoftLockedForNewCopyActions, requireUserNotSuspended, (req, res) => {
   if (copyFlatteningWallets.has(req.walletAddress)) {
     return res.status(409).json({ error: 'Copy-trading emergency stop is in progress. Try again when it finishes.' });
   }
@@ -4168,7 +4265,7 @@ app.post('/api/trade-copy/groups', sensitiveLimiter, requireWalletSession, requi
   );
 });
 
-app.post('/api/trade-copy/groups/:groupId/active', sensitiveLimiter, requireWalletSession, requireUserNotSuspended, (req, res) => {
+app.post('/api/trade-copy/groups/:groupId/active', sensitiveLimiter, requireWalletSession, walletActionLimiter, requireWalletNotSoftLockedForNewCopyActions, requireUserNotSuspended, (req, res) => {
   if (copyFlatteningWallets.has(req.walletAddress)) {
     return res.status(409).json({ error: 'Copy-trading emergency stop is in progress. Try again when it finishes.' });
   }
@@ -4482,7 +4579,7 @@ function executeTradeForAccount(accountId, order, walletAddress, callback) {
   );
 }
 
-app.post('/api/trades/execute', sensitiveLimiter, requireWalletSession, requireUserNotSuspended, (req, res) => {
+app.post('/api/trades/execute', sensitiveLimiter, requireWalletSession, walletActionLimiter, requireWalletNotSoftLocked, requireUserNotSuspended, (req, res) => {
   const { account_id: accountId, symbol, side, price, size_usd: sizeUsd, margin_used: marginUsed, leverage, sl, tp } = req.body || {};
   const slTpMode = req.body?.sl_tp_mode || 'price';
   const slAmount = req.body?.sl_amount == null ? null : Number(req.body.sl_amount);
@@ -5117,7 +5214,7 @@ app.get('/api/trades/active', requireWalletSession, (req, res) => {
   });
 });
 
-app.get('/api/forex/candles', (req, res) => {
+app.get('/api/forex/candles', sensitiveLimiter, requireWalletSession, chartLimiter, requireWalletNotSoftLocked, (req, res) => {
   const market = getTradeMarket(String(req.query.symbol || ''));
   if (!market || market.asset_class !== 'FOREX') {
     return res.status(400).json({ error: 'Choose a supported Forex market.' });
@@ -5134,7 +5231,7 @@ app.get('/api/forex/candles', (req, res) => {
     });
 });
 
-function streamMarketData(req, res, filter = () => true) {
+function streamMarketData(req, res, filter = () => true, walletAddress) {
   res.set({
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache, no-transform',
@@ -5146,6 +5243,7 @@ function streamMarketData(req, res, filter = () => true) {
   const client = {
     res,
     filter,
+    walletAddress,
     heartbeat: setInterval(() => {
       if (!res.destroyed && !res.writableEnded) res.write(': heartbeat\n\n');
     }, 20000)
@@ -5161,16 +5259,26 @@ function streamMarketData(req, res, filter = () => true) {
     clearInterval(client.heartbeat);
     marketPriceStreamClients.delete(client);
   };
+  client.close = () => {
+    removeClient();
+    if (!res.destroyed && !res.writableEnded) res.end();
+  };
   req.on('close', removeClient);
   res.on('close', removeClient);
 }
 
-app.get('/api/market-data/stream', (req, res) => {
-  streamMarketData(req, res);
+function disconnectMarketDataStreams(walletAddress) {
+  for (const client of marketPriceStreamClients) {
+    if (client.walletAddress === walletAddress) client.close();
+  }
+}
+
+app.get('/api/market-data/stream', sensitiveLimiter, requireWalletSession, chartLimiter, requireWalletNotSoftLocked, (req, res) => {
+  streamMarketData(req, res, () => true, req.walletAddress);
 });
 
-app.get('/api/forex/stream', (req, res) => {
-  streamMarketData(req, res, quote => quote.assetClass === 'FOREX');
+app.get('/api/forex/stream', sensitiveLimiter, requireWalletSession, chartLimiter, requireWalletNotSoftLocked, (req, res) => {
+  streamMarketData(req, res, quote => quote.assetClass === 'FOREX', req.walletAddress);
 });
 
 app.use('/api', (req, res) => {

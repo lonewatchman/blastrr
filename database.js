@@ -40,6 +40,51 @@ function initTables() {
     )`);
     db.run('CREATE INDEX IF NOT EXISTS idx_user_login_ip_events_wallet_created ON user_login_ip_events(wallet_address, created_at DESC)');
 
+    db.run(`CREATE TABLE IF NOT EXISTS wallet_sessions (
+      token_hash TEXT PRIMARY KEY,
+      wallet_address TEXT NOT NULL,
+      ip_address TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      last_seen_at INTEGER NOT NULL,
+      reauthenticated_at INTEGER,
+      revoked_at INTEGER
+    )`);
+    db.run('CREATE INDEX IF NOT EXISTS idx_wallet_sessions_ip_expiry ON wallet_sessions(ip_address, expires_at, revoked_at)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_wallet_sessions_wallet_expiry ON wallet_sessions(wallet_address, expires_at, revoked_at)');
+
+    db.run(`CREATE TABLE IF NOT EXISTS ip_security_incidents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ip_address TEXT NOT NULL,
+      triggering_wallet TEXT NOT NULL,
+      session_count INTEGER NOT NULL,
+      created_at INTEGER NOT NULL
+    )`);
+    db.run('CREATE INDEX IF NOT EXISTS idx_ip_security_incidents_ip_created ON ip_security_incidents(ip_address, created_at DESC)');
+
+    db.run(`CREATE TABLE IF NOT EXISTS wallet_security_locks (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      wallet_address TEXT NOT NULL,
+      incident_id INTEGER NOT NULL,
+      locked_at INTEGER NOT NULL,
+      cleared_at INTEGER,
+      cleared_by TEXT,
+      FOREIGN KEY(incident_id) REFERENCES ip_security_incidents(id)
+    )`);
+    db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_wallet_security_locks_active
+      ON wallet_security_locks(wallet_address) WHERE cleared_at IS NULL`);
+    db.run('CREATE INDEX IF NOT EXISTS idx_wallet_security_locks_wallet_locked ON wallet_security_locks(wallet_address, locked_at DESC)');
+
+    db.run(`CREATE TABLE IF NOT EXISTS wallet_security_lock_reviews (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      wallet_address TEXT NOT NULL,
+      admin_wallet TEXT NOT NULL,
+      action TEXT NOT NULL CHECK(action IN ('CLEAR', 'AUTO_REAUTH')),
+      reason TEXT,
+      created_at INTEGER NOT NULL
+    )`);
+    db.run('CREATE INDEX IF NOT EXISTS idx_wallet_security_lock_reviews_wallet_created ON wallet_security_lock_reviews(wallet_address, created_at DESC)');
+
     db.run(`CREATE TABLE IF NOT EXISTS user_admin_actions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       wallet_address TEXT NOT NULL,

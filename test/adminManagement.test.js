@@ -60,7 +60,7 @@ test('admin can suspend users and review retained login IP warnings without bloc
   assert.match(appJs, /user_wallet: wallet, action, reason/);
   assert.match(appJs, /user_wallet: wallet \}\)/);
   assert.match(serverJs, /app\.post\('\/api\/accounts\/purchase', sensitiveLimiter, requireWalletSession, requireUserNotSuspended/);
-  assert.match(serverJs, /app\.post\('\/api\/trades\/execute', sensitiveLimiter, requireWalletSession, requireUserNotSuspended/);
+  assert.match(serverJs, /app\.post\('\/api\/trades\/execute', sensitiveLimiter, requireWalletSession, walletActionLimiter, requireWalletNotSoftLocked, requireUserNotSuspended/);
   assert.match(serverJs, /app\.post\('\/api\/withdrawals\/request', sensitiveLimiter, requireTradeSignature, requireUserNotSuspended/);
   assert.match(serverJs, /app\.post\('\/api\/trades\/close', sensitiveLimiter, requireWalletSession, \(req, res\)/);
   assert.match(serverJs, /created_at >= datetime\('now', '-180 days'\)/);

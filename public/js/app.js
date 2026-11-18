@@ -75,6 +75,7 @@ let connectedWallet = null;
         let plansData = [];
         let planLoadAttempts = 0;
         let marketDataStream = null;
+        let marketDataReconnectTimer = null;
         let marketTickerItems = new Map();
         let marketChatSymbol = null;
         let marketChatGeneration = 0;
@@ -105,6 +106,8 @@ let connectedWallet = null;
         let walletSessionExpiresAt = 0;
         let walletSessionPromise = null;
         let walletSessionGeneration = 0;
+        let walletSoftLocked = false;
+        let walletSecurityPollTimer = null;
         let dashboardInitialized = false;
         let dashboardAuthenticated = false;
         let disclaimerGateMode = 'login';
@@ -1153,7 +1156,7 @@ let connectedWallet = null;
                 liveMarketChartHistoryFailed = true;
                 try {
                     if (!forexMarket) throw new Error('The selected Forex market is not configured.');
-                    const response = await fetch(`/api/forex/candles?symbol=${encodeURIComponent(forexMarket.symbol)}&timeframe=${encodeURIComponent(timeframe)}`);
+                    const response = await walletFetch(`/api/forex/candles?symbol=${encodeURIComponent(forexMarket.symbol)}&timeframe=${encodeURIComponent(timeframe)}`);
                     const data = await response.json();
                     if (!response.ok) throw new Error(data?.error || `Forex candle request failed (${response.status}).`);
                     if (generation !== liveMarketChartGeneration || liveMarketChartPair !== pair) return;
@@ -1604,30 +1607,87 @@ let connectedWallet = null;
         }
 
         function connectMarketDataStream() {
-            if (marketDataStream || typeof EventSource === 'undefined') return;
-            const stream = new EventSource('/api/market-data/stream');
-            marketDataStream = stream;
-            stream.onopen = () => {
-                const status = document.getElementById('market-ticker-status');
-                if (status) status.textContent = 'LIVE · SERVER MARKET DATA';
-                const forexStatus = document.getElementById('market-hours-status');
-                const selectedMarket = marketsData.find(market => market.symbol === document.getElementById('order-symbol')?.value);
-                if (forexStatus && selectedMarket?.asset_class === 'FOREX') forexStatus.lastChild.textContent = 'SWISSQUOTE · LIVE';
-            };
-            stream.onmessage = event => {
+            if (marketDataStream || !dashboardAuthenticated || walletSoftLocked) return;
+            const controller = new AbortController();
+            marketDataStream = controller;
+            const connect = async () => {
                 try {
-                    applyMarketDataQuote(JSON.parse(event.data));
+                    const response = await walletFetch('/api/market-data/stream', {
+                        signal: controller.signal
+                    });
+                    if (response.status === 401) {
+                        lockDashboard('Your wallet session expired. Sign in again to continue.');
+                        return;
+                    }
+                    if (response.status === 423) {
+                        setWalletSoftLockState(true);
+                        return;
+                    }
+                    if (!response.ok) throw new Error(`Market data stream failed (${response.status}).`);
+                    if (!response.body) throw new Error('Market data streaming is unavailable in this browser.');
+
+                    const status = document.getElementById('market-ticker-status');
+                    if (status) status.textContent = 'LIVE · SERVER MARKET DATA';
+                    const forexStatus = document.getElementById('market-hours-status');
+                    const selectedMarket = marketsData.find(market => market.symbol === document.getElementById('order-symbol')?.value);
+                    if (forexStatus && selectedMarket?.asset_class === 'FOREX') forexStatus.lastChild.textContent = 'SWISSQUOTE · LIVE';
+
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    let buffer = '';
+                    while (!controller.signal.aborted) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        buffer += decoder.decode(value, { stream: true });
+                        const frames = buffer.split(/\r?\n\r?\n/);
+                        buffer = frames.pop() || '';
+                        for (const frame of frames) {
+                            const data = frame.split(/\r?\n/)
+                                .filter(line => line.startsWith('data:'))
+                                .map(line => line.slice(5).trimStart())
+                                .join('\n');
+                            if (!data) continue;
+                            try {
+                                applyMarketDataQuote(JSON.parse(data));
+                            } catch (error) {
+                                console.warn('Invalid server market data update:', error);
+                            }
+                        }
+                    }
                 } catch (error) {
-                    console.warn('Invalid server market data update:', error);
+                    if (controller.signal.aborted) return;
+                    const status = document.getElementById('market-ticker-status');
+                    if (status) status.textContent = 'Reconnecting to server market data';
+                    const forexStatus = document.getElementById('market-hours-status');
+                    const selectedMarket = marketsData.find(market => market.symbol === document.getElementById('order-symbol')?.value);
+                    if (forexStatus && selectedMarket?.asset_class === 'FOREX') forexStatus.lastChild.textContent = 'FOREX · RECONNECTING';
+                    console.warn('Market data stream disconnected:', error);
+                } finally {
+                    if (marketDataStream === controller) marketDataStream = null;
+                    if (!controller.signal.aborted && dashboardAuthenticated && !walletSoftLocked) {
+                        marketDataReconnectTimer = setTimeout(connectMarketDataStream, 3000);
+                    }
                 }
             };
-            stream.onerror = () => {
-                const status = document.getElementById('market-ticker-status');
-                if (status) status.textContent = 'Reconnecting to server market data';
-                const forexStatus = document.getElementById('market-hours-status');
-                const selectedMarket = marketsData.find(market => market.symbol === document.getElementById('order-symbol')?.value);
-                if (forexStatus && selectedMarket?.asset_class === 'FOREX') forexStatus.lastChild.textContent = 'FOREX · RECONNECTING';
-            };
+            connect();
+        }
+
+        function disconnectMarketDataStream() {
+            if (marketDataReconnectTimer) {
+                clearTimeout(marketDataReconnectTimer);
+                marketDataReconnectTimer = null;
+            }
+            marketDataStream?.abort();
+            marketDataStream = null;
+        }
+
+        function setWalletSoftLockState(locked) {
+            walletSoftLocked = locked === true;
+            document.body.classList.toggle('wallet-soft-locked', walletSoftLocked);
+            const warning = document.getElementById('wallet-security-warning');
+            if (warning) warning.hidden = !walletSoftLocked;
+            if (walletSoftLocked) disconnectMarketDataStream();
+            else connectMarketDataStream();
         }
 
         function applyMarketDataQuote(update) {
@@ -2803,6 +2863,9 @@ let connectedWallet = null;
         }
 
         function lockDashboard(message = 'Sign a message with your wallet to unlock your trading dashboard.') {
+            disconnectMarketDataStream();
+            if (walletSecurityPollTimer) clearInterval(walletSecurityPollTimer);
+            walletSecurityPollTimer = null;
             dashboardAuthenticated = false;
             updateMarketChatControls();
             resolvePurchaseDisclaimer(false);
@@ -2923,6 +2986,11 @@ let connectedWallet = null;
 
         async function continueAfterDisclaimer() {
             disclaimerGateMode = 'login';
+            try {
+                await refreshWalletSecurityStatus();
+            } catch (error) {
+                console.warn('Unable to refresh wallet security status:', error);
+            }
             unlockDashboard();
             setWalletLoginStatus('');
             await initializeDashboard();
@@ -2936,6 +3004,7 @@ let connectedWallet = null;
 
         function unlockDashboard() {
             dashboardAuthenticated = true;
+            startWalletSecurityStatusPolling();
             updateMarketChatControls();
             document.body.classList.remove('auth-locked');
             const header = document.querySelector('body > header');
@@ -3123,6 +3192,7 @@ let connectedWallet = null;
             const owner = walletAddress.toLowerCase();
             const changedWallet = connectedWallet?.toLowerCase() !== owner;
             if (changedWallet) {
+                disconnectMarketDataStream();
                 resetDashboardToTradeView();
                 userAccounts = [];
                 accountPerformanceData = { overall: null, accounts: [] };
@@ -3139,6 +3209,10 @@ let connectedWallet = null;
                 walletSessionOwner = null;
                 walletSessionExpiresAt = 0;
                 walletSessionPromise = null;
+                walletSoftLocked = false;
+                document.body.classList.remove('wallet-soft-locked');
+                const securityWarning = document.getElementById('wallet-security-warning');
+                if (securityWarning) securityWarning.hidden = true;
                 lockDashboard('Sign the access message with the selected wallet to continue.');
             }
             connectedWallet = walletAddress;
@@ -3262,10 +3336,15 @@ let connectedWallet = null;
             resetDashboardToTradeView();
             connectedWallet = null;
             walletSessionGeneration++;
+            disconnectMarketDataStream();
             walletSessionToken = null;
             walletSessionOwner = null;
             walletSessionExpiresAt = 0;
             walletSessionPromise = null;
+            walletSoftLocked = false;
+            document.body.classList.remove('wallet-soft-locked');
+            const securityWarning = document.getElementById('wallet-security-warning');
+            if (securityWarning) securityWarning.hidden = true;
             lockDashboard('Your wallet has been disconnected. Sign in again to access your dashboard.');
             availableWallets = [];
             userAccounts = [];
@@ -4620,12 +4699,14 @@ let connectedWallet = null;
                         <div class="admin-account-stats">
                             <span>User access: <strong>${Number(user.admin_suspended) === 1 ? 'SUSPENDED' : 'ACTIVE'}</strong></span>
                             ${Number(user.admin_suspended) === 1 ? `<span class="admin-account-flag">Suspension reason: ${escapeHTML(user.admin_suspend_reason || 'No reason recorded')}</span>` : ''}
+                            ${user.security_locked_at ? `<span class="admin-account-flag">IP session-limit lock · ${escapeHTML(user.security_lock_ip || 'IP unavailable')} · ${escapeHTML(new Date(Number(user.security_locked_at)).toLocaleString())}</span>` : ''}
                             ${Number(user.new_ip_count) > 0 ? `<span class="admin-account-flag">⚠ ${Number(user.new_ip_count)} new-IP login warning${Number(user.new_ip_count) === 1 ? '' : 's'} in the last 180 days</span>` : ''}
                             <button class="${Number(user.admin_suspended) === 1 ? 'btn-wallet' : 'btn-sell'}"
                                 data-admin-user-action="${Number(user.admin_suspended) === 1 ? 'RESTORE' : 'SUSPEND'}"
                                 data-admin-user-wallet="${escapeHTML(user.wallet_address)}">
                                 ${Number(user.admin_suspended) === 1 ? 'Restore user access' : 'Suspend user'}
                             </button>
+                            ${user.security_locked_at ? `<button class="btn-wallet" data-admin-user-action="CLEAR_IP_SOFT_LOCK" data-admin-user-wallet="${escapeHTML(user.wallet_address)}">Clear IP security lock</button>` : ''}
                         </div>
                         <details data-admin-user-wallet="${escapeHTML(user.wallet_address)}">
                             <summary>Show account and login security details</summary>
@@ -5304,11 +5385,17 @@ let connectedWallet = null;
         }
 
         async function adminUserAction(wallet, action) {
-            const reason = action === 'SUSPEND' ? prompt('Why is this user being suspended?')?.trim() : '';
+            const reason = action === 'SUSPEND'
+                ? prompt('Why is this user being suspended?')?.trim()
+                : action === 'CLEAR_IP_SOFT_LOCK'
+                    ? (prompt('Optional note for clearing this IP security lock:') || '').trim()
+                    : '';
             if (action === 'SUSPEND' && !reason) return;
             const promptText = action === 'SUSPEND'
                 ? 'Suspend this user? They will retain sign-in and read access and may close existing trades, but purchases, new trades, and withdrawals will be blocked.'
-                : 'Restore this user? Any per-account freezes and risk locks will remain.';
+                : action === 'CLEAR_IP_SOFT_LOCK'
+                    ? 'Clear this wallet’s IP session-limit security lock?'
+                    : 'Restore this user? Any per-account freezes and risk locks will remain.';
             if (!confirm(promptText)) return;
             try {
                 const authorization = await signedTradeAuthorization();
@@ -5478,6 +5565,7 @@ let connectedWallet = null;
                 walletSessionToken = data.token;
                 walletSessionOwner = owner;
                 walletSessionExpiresAt = data.expires_at;
+                setWalletSoftLockState(data.wallet_soft_locked === true);
                 return walletSessionToken;
             })();
             walletSessionOwner = owner;
@@ -5489,19 +5577,73 @@ let connectedWallet = null;
             }
         }
 
-        async function walletFetch(url, options = {}) {
+        async function walletFetch(url, options = {}, authenticationRetry = true, reauthenticationRetry = true) {
             if (dashboardAuthenticated && (!walletSessionToken || walletSessionExpiresAt <= Date.now())) {
                 lockDashboard('Your wallet session expired. Sign in again to continue.');
                 throw new Error('Wallet session expired. Sign in again to continue.');
             }
-            const token = await ensureWalletSession();
-            return fetch(url, {
+            let token = await ensureWalletSession();
+            const fetchWithToken = sessionToken => fetch(url, {
                 ...options,
                 headers: {
                     ...(options.headers || {}),
-                    Authorization: `Bearer ${token}`
+                    Authorization: `Bearer ${sessionToken}`
                 }
             });
+            let response = await fetchWithToken(token);
+            if (response.status === 401 && authenticationRetry && connectedWallet) {
+                walletSessionGeneration++;
+                walletSessionToken = null;
+                walletSessionExpiresAt = 0;
+                walletSessionOwner = connectedWallet.toLowerCase();
+                walletSessionPromise = null;
+                token = await ensureWalletSession();
+                response = await fetchWithToken(token);
+            }
+            if (response.headers.get('X-Wallet-Reauthentication-Required') === 'true' && reauthenticationRetry) {
+                await reauthorizeWalletSession();
+                response = await fetchWithToken(walletSessionToken);
+            }
+            if (response.headers.get('X-Wallet-Soft-Locked') === 'true') setWalletSoftLockState(true);
+            return response;
+        }
+
+        async function reauthorizeWalletSession() {
+            const token = await ensureWalletSession();
+            const authorization = await signedTradeAuthorization();
+            const response = await fetch('/api/auth/wallet-session/reauthorize', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    Authorization: `Bearer ${token}`
+                },
+                body: JSON.stringify(authorization)
+            });
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Unable to reauthorize this wallet session.');
+            setWalletSoftLockState(data.wallet_soft_locked === true);
+            return data;
+        }
+
+        async function refreshWalletSecurityStatus() {
+            const response = await walletFetch('/api/user/security-status');
+            const data = await response.json();
+            if (!response.ok) throw new Error(data.error || 'Unable to load wallet security status.');
+            setWalletSoftLockState(data.wallet_soft_locked === true);
+            if (data.wallet_soft_locked && data.reauthentication_required) {
+                return reauthorizeWalletSession();
+            }
+            return data;
+        }
+
+        function startWalletSecurityStatusPolling() {
+            if (walletSecurityPollTimer) clearInterval(walletSecurityPollTimer);
+            walletSecurityPollTimer = setInterval(() => {
+                if (!dashboardAuthenticated || document.visibilityState !== 'visible') return;
+                refreshWalletSecurityStatus().catch(error => {
+                    console.warn('Unable to refresh wallet security status:', error);
+                });
+            }, 60000);
         }
 
         async function loadOpenTrades(accountId) {
@@ -5611,6 +5753,10 @@ let connectedWallet = null;
 
         async function executeTrade(side) {
             if (tradeExecutionInProgress) return;
+            if (walletSoftLocked) {
+                setTradeFeedback('New trades are disabled for this wallet. Re-sign each active wallet session; closing existing positions remains available.');
+                return;
+            }
             if (!selectedAccountId || !activeAccount) { setTradeFeedback('Select or purchase an active trading account first.'); return; }
             const symbol = document.getElementById('order-symbol').value;
             const selectedMarket = marketsData.find(market => market.symbol === symbol);

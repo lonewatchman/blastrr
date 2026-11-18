@@ -15,7 +15,7 @@ test('copy-trading groups persist unique account assignments and linked position
   assert.match(databaseJs, /CREATE TABLE IF NOT EXISTS trade_copy_leader_trades/);
   assert.match(databaseJs, /CREATE TABLE IF NOT EXISTS trade_copy_links/);
   assert.match(serverJs, /app\.get\('\/api\/trade-copy\/groups', requireWalletSession/);
-  assert.match(serverJs, /app\.post\('\/api\/trade-copy\/groups', sensitiveLimiter, requireWalletSession, requireUserNotSuspended/);
+  assert.match(serverJs, /app\.post\('\/api\/trade-copy\/groups', sensitiveLimiter, requireWalletSession, walletActionLimiter, requireWalletNotSoftLockedForNewCopyActions, requireUserNotSuspended/);
   assert.match(serverJs, /Permanently locked accounts cannot be added to copy-trading groups/);
   assert.match(serverJs, /An account is already assigned to another copy-trading group/);
   assert.match(serverJs, /app\.post\('\/api\/trade-copy\/groups\/:groupId\/active'/);
