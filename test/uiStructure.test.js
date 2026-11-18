@@ -381,7 +381,7 @@ test('terminal stays black and locked until a signed wallet session is establish
   assert.match(appJs, /quantity < 1 \|\| quantity > 10/);
   assert.match(serverJs, /const quantity = Number\(req\.body\?\.quantity \?\? 1\)/);
   assert.match(serverJs, /verifyMultiChainPurchase\(tx_hash, Number\(chain_id\), wallet_address, totalPrice, TREASURY_WALLET\)/);
-  assert.match(serverJs, /INSERT INTO purchases \(tx_hash, chain_id, wallet_address, account_id, quantity\)/);
+  assert.match(serverJs, /INSERT INTO purchases \(tx_hash, chain_id, wallet_address, account_id, quantity, amount_usdt\)/);
   assert.match(serverJs, /account_ids: accountIds/);
   assert.match(appJs, /disclaimer_version: DISCLAIMER_VERSION,[\s\S]*?terms_accepted: true,[\s\S]*?simulated_funds_acknowledged: true/);
   assert.match(serverJs, /app\.get\('\/api\/user\/disclaimer-consent', requireWalletSession/);

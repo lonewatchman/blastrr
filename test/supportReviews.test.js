@@ -48,7 +48,7 @@ test('review submission and moderation are wallet-bound and admin-protected', ()
   assert.doesNotMatch(serverJs.slice(serverJs.indexOf("app.get('/api/user/review'"), serverJs.indexOf("app.get('/api/reviews'")), /EXISTS \(SELECT 1 FROM purchases purchase/);
   assert.match(serverJs, /Reviews are available only for accounts assigned to this wallet/);
   assert.match(serverJs, /WHERE a\.id = \? AND LOWER\(a\.wallet_address\) = LOWER\(\?\)/);
-  assert.match(serverJs, /INSERT INTO user_reviews \(account_id, wallet_address, username, rating, comment, published\)/);
+  assert.match(serverJs, /INSERT INTO user_reviews \(account_id, wallet_address, username, rating, comment, published, moderation_status\)/);
   assert.match(serverJs, /ON CONFLICT\(account_id\) DO UPDATE/);
   assert.match(serverJs, /WHERE LOWER\(user_reviews\.wallet_address\) = LOWER\(excluded\.wallet_address\)/);
   assert.match(serverJs, /rating < 1 \|\| rating > 5/);

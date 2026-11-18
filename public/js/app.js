@@ -108,6 +108,9 @@ let connectedWallet = null;
         let walletSessionGeneration = 0;
         let walletSoftLocked = false;
         let walletSecurityPollTimer = null;
+        let adminOperationsPollTimer = null;
+        let adminOperationsPollInFlight = false;
+        let adminOperationsLoaded = false;
         let dashboardInitialized = false;
         let dashboardAuthenticated = false;
         let disclaimerGateMode = 'login';
@@ -130,6 +133,7 @@ let connectedWallet = null;
         let maintenanceStatuses = {};
         let maintenanceMessage = '';
         let currentWalletIsAdmin = false;
+        let currentWalletIsSupport = false;
         const maintenanceViewPages = {
             tradeView: 'trade',
             accountsView: 'accounts',
@@ -1984,6 +1988,7 @@ let connectedWallet = null;
                 lockDashboard();
                 return;
             }
+            if (currentWalletIsSupport && !currentWalletIsAdmin) viewId = 'supportStaffView';
             const requestedViewId = viewId;
             const pageId = maintenanceViewPages[viewId];
             if (pageId && maintenanceStatuses[pageId] && !currentWalletIsAdmin) {
@@ -2009,17 +2014,22 @@ let connectedWallet = null;
             toggleMobileMenu(true);
 
             if (viewId === 'adminView') {
+                loadAdminOperationsDashboard();
                 loadAdminWithdrawals();
                 loadAdminHedgingAlerts();
                 loadAdminPlans();
                 loadAdminTickets();
                 loadAdminReviews();
+                loadAdminSupportStaff();
                 if (document.getElementById('admin-creators-panel')?.hidden === false) {
                     loadAdminCreatorApplications();
                     loadAdminPromoManagement();
                 }
                 if (document.getElementById('admin-battlepass-panel')?.hidden === false) loadAdminBattlePass();
                 if (document.getElementById('admin-maintenance-panel')?.hidden === false) loadAdminMaintenanceSettings();
+            }
+            else if (viewId === 'supportStaffView') {
+                switchSupportStaffSection('tickets');
             }
             else if (viewId === 'leaderboardView') loadLeaderboard(currentLeaderboardMode);
             else if (viewId === 'accountsView' && connectedWallet) loadUserAccounts(connectedWallet);
@@ -2084,6 +2094,33 @@ let connectedWallet = null;
             }
             if (panelId === 'admin-battlepass-panel') loadAdminBattlePass();
             if (panelId === 'admin-maintenance-panel') loadAdminMaintenanceSettings();
+        }
+
+        function setSupportStaffWorkspace(enabled) {
+            document.body.classList.toggle('support-staff-mode', enabled);
+            const supportNav = document.getElementById('support-nav-item');
+            const supportView = document.getElementById('supportStaffView');
+            if (supportNav) supportNav.hidden = !enabled;
+            if (supportView) supportView.hidden = !enabled;
+            const adminNav = document.getElementById('admin-nav-item');
+            if (adminNav) adminNav.style.display = currentWalletIsAdmin ? 'inline-block' : 'none';
+        }
+
+        function switchSupportStaffSection(section) {
+            if (!['tickets', 'reviews'].includes(section)) return;
+            const ticketsSelected = section === 'tickets';
+            const ticketsPanel = document.getElementById('support-staff-tickets-panel');
+            const reviewsPanel = document.getElementById('support-staff-reviews-panel');
+            const ticketsTab = document.getElementById('support-staff-tickets-tab');
+            const reviewsTab = document.getElementById('support-staff-reviews-tab');
+            if (ticketsPanel) ticketsPanel.hidden = !ticketsSelected;
+            if (reviewsPanel) reviewsPanel.hidden = ticketsSelected;
+            ticketsTab?.classList.toggle('active', ticketsSelected);
+            reviewsTab?.classList.toggle('active', !ticketsSelected);
+            ticketsTab?.setAttribute('aria-selected', String(ticketsSelected));
+            reviewsTab?.setAttribute('aria-selected', String(!ticketsSelected));
+            if (ticketsSelected) loadSupportStaffTickets();
+            else loadSupportStaffReviews();
         }
 
         function switchProfileSection(panelId) {
@@ -2993,8 +3030,16 @@ let connectedWallet = null;
             }
             unlockDashboard();
             setWalletLoginStatus('');
+            const roles = await checkRole();
+            adminOperationsLoaded = false;
+            if (roles?.isSupportStaff && !roles.isAdmin) {
+                setSupportStaffWorkspace(true);
+                switchView('supportStaffView');
+                return;
+            }
+            setSupportStaffWorkspace(false);
             await initializeDashboard();
-            checkRole(connectedWallet);
+            if (roles?.isAdmin) startAdminOperationsPolling();
             const accountsLoaded = await loadUserAccounts(connectedWallet);
             loadUserProfile(connectedWallet);
             loadUserTickets(connectedWallet);
@@ -3334,6 +3379,9 @@ let connectedWallet = null;
 
         function disconnectWallet() {
             resetDashboardToTradeView();
+            currentWalletIsAdmin = false;
+            currentWalletIsSupport = false;
+            setSupportStaffWorkspace(false);
             connectedWallet = null;
             walletSessionGeneration++;
             disconnectMarketDataStream();
@@ -3407,18 +3455,32 @@ let connectedWallet = null;
 
         }
 
-        async function checkRole(wallet) {
+        async function checkRole() {
             try {
-                const res = await fetch(`/api/auth/role?wallet=${wallet}`);
+                const res = await walletFetch('/api/auth/role');
+                if (!res.ok) throw new Error('Unable to verify wallet role.');
                 const data = await res.json();
                 currentWalletIsAdmin = Boolean(data.isAdmin);
+                currentWalletIsSupport = Boolean(data.isSupportStaff) && !currentWalletIsAdmin;
                 const adminNav = document.getElementById('admin-nav-item');
-                if (adminNav) adminNav.style.display = data.isAdmin ? 'inline-block' : 'none';
+                if (adminNav) adminNav.style.display = currentWalletIsAdmin ? 'inline-block' : 'none';
+                const supportNav = document.getElementById('support-nav-item');
+                if (supportNav) supportNav.hidden = !currentWalletIsSupport;
                 updateMaintenanceNavigation();
                 const activeView = document.querySelector('.view-panel.active')?.id;
                 const pageId = maintenanceViewPages[activeView];
                 if (!currentWalletIsAdmin && pageId && maintenanceStatuses[pageId]) switchView(activeView);
-            } catch (err) { console.error(err); }
+                return { isAdmin: currentWalletIsAdmin, isSupportStaff: currentWalletIsSupport };
+            } catch (err) {
+                console.error(err);
+                currentWalletIsAdmin = false;
+                currentWalletIsSupport = false;
+                const adminNav = document.getElementById('admin-nav-item');
+                if (adminNav) adminNav.style.display = 'none';
+                const supportNav = document.getElementById('support-nav-item');
+                if (supportNav) supportNav.hidden = true;
+                return { isAdmin: false, isSupportStaff: false };
+            }
         }
 
         async function loadUserAccounts(wallet, waitForPortfolio = false) {
@@ -4511,14 +4573,421 @@ let connectedWallet = null;
             } catch (err) { console.error(err); }
         }
 
-        async function loadAdminWithdrawals() {
+        function formatAdminUsdt(value) {
+            const amount = Number(value);
+            return `$${(Number.isFinite(amount) ? amount : 0).toLocaleString('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            })} USDT`;
+        }
+
+        function getTransactionExplorerUrl(chainId, transactionHash) {
+            if (typeof transactionHash !== 'string' || !/^0x[0-9a-f]{64}$/i.test(transactionHash)) return '';
+            const explorers = {
+                1: 'https://etherscan.io/tx/',
+                8453: 'https://basescan.org/tx/',
+                137: 'https://polygonscan.com/tx/',
+                43114: 'https://snowtrace.io/tx/',
+                56: 'https://bscscan.com/tx/'
+            };
+            const baseUrl = explorers[Number(chainId)];
+            return baseUrl ? `${baseUrl}${encodeURIComponent(transactionHash)}` : '';
+        }
+
+        function adminEventLabel(event) {
+            const walletLabel = event.username
+                ? `@${event.username}`
+                : `${String(event.wallet_address || '').slice(0, 6)}…${String(event.wallet_address || '').slice(-4)}`;
+            switch (event.event_type) {
+                case 'ACCOUNT_PURCHASE': return `${walletLabel} purchased ${event.plan_name} ×${event.quantity}`;
+                case 'PERFORMANCE_PAYOUT_REQUESTED': return `${walletLabel} requested a trading performance payout`;
+                case 'PERFORMANCE_PAYOUT_PAID': return `Trading performance payout paid to ${walletLabel}`;
+                case 'PERFORMANCE_PAYOUT_REJECTED': return `Trading performance payout rejected for ${walletLabel}`;
+                case 'REFERRAL_PAYOUT_REQUESTED': return `${walletLabel} requested a referral payout`;
+                case 'REFERRAL_PAYOUT_PAID': return `Referral payout paid to ${walletLabel}`;
+                case 'REFERRAL_PAYOUT_REJECTED': return `Referral payout rejected for ${walletLabel}`;
+                case 'TICKET_OPENED': return `New support ticket from ${walletLabel}: ${event.plan_name}`;
+                case 'REVIEW_PENDING': return `New homepage review from ${walletLabel}`;
+                default: return 'Platform activity';
+            }
+        }
+
+        function renderAdminOperationsFeed(events) {
+            const feed = document.getElementById('admin-operations-feed');
+            if (!feed) return;
+            if (!events.length) {
+                feed.innerHTML = '<li class="account-chart-empty">No recent operations activity.</li>';
+                return;
+            }
+            feed.innerHTML = events.map(event => {
+                const explorerUrl = getTransactionExplorerUrl(event.chain_id, event.tx_hash);
+                const isTicket = event.event_type === 'TICKET_OPENED';
+                const isWithdrawal = event.event_type.includes('PAYOUT_');
+                const isReview = event.event_type === 'REVIEW_PENDING';
+                const action = isTicket
+                    ? '<button type="button" class="btn-wallet" data-admin-ops-open="tickets">Open tickets</button>'
+                    : isWithdrawal
+                        ? '<button type="button" class="btn-wallet" data-admin-ops-open="withdrawals">Open payouts</button>'
+                        : isReview
+                            ? '<button type="button" class="btn-wallet" data-admin-ops-open="reviews">Open reviews</button>'
+                            : '';
+                return `
+                    <li class="admin-operations-event">
+                        <div>
+                            <strong>${escapeHTML(adminEventLabel(event))}</strong>
+                            <small>${escapeHTML(new Date(event.occurred_at).toLocaleString())}${isWithdrawal || event.event_type === 'ACCOUNT_PURCHASE' ? ` · ${escapeHTML(formatAdminUsdt(event.amount_usdt))}` : ''}</small>
+                            ${event.tx_hash ? `<small>Transaction: ${explorerUrl ? `<a href="${escapeHTML(explorerUrl)}" target="_blank" rel="noopener noreferrer">${escapeHTML(event.tx_hash)}</a>` : `<code>${escapeHTML(event.tx_hash)}</code>`}</small>` : ''}
+                        </div>
+                        ${action}
+                    </li>
+                `;
+            }).join('');
+            feed.onclick = event => {
+                const button = event.target.closest('[data-admin-ops-open]');
+                if (!button) return;
+                const targetId = button.dataset.adminOpsOpen === 'tickets'
+                    ? 'admin-ticket-list'
+                    : button.dataset.adminOpsOpen === 'reviews'
+                        ? 'admin-review-list'
+                        : 'admin-payout-queue';
+                document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            };
+        }
+
+        function showAdminOperationsNotice(event) {
+            const host = document.getElementById('admin-ops-notices');
+            if (!host) return;
+            const notice = document.createElement('div');
+            notice.className = 'admin-ops-notice';
+            const text = document.createElement('strong');
+            text.textContent = adminEventLabel(event);
+            notice.append(text);
+            host.prepend(notice);
+            window.setTimeout(() => notice.remove(), 15000);
+        }
+
+        async function loadAdminOperationsDashboard() {
+            if (!currentWalletIsAdmin || adminOperationsPollInFlight) return;
+            adminOperationsPollInFlight = true;
             try {
-                const authorization = await signedTradeAuthorization();
-                const res = await fetch('/api/admin/withdrawals', {
+                const response = await walletFetch('/api/admin/operations/dashboard');
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Unable to load operations dashboard.');
+                const metrics = data.metrics || {};
+                const setText = (id, value) => {
+                    const element = document.getElementById(id);
+                    if (element) element.textContent = String(value);
+                };
+                setText('admin-active-wallets', Number(metrics.active_wallets || 0).toLocaleString());
+                setText('admin-all-time-wallets', Number(metrics.all_time_wallets || 0).toLocaleString());
+                setText('admin-sales-total', formatAdminUsdt(metrics.sales_usdt));
+                setText('admin-sales-count', `${Number(metrics.verified_purchases || 0).toLocaleString()} verified paid purchases`);
+                setText('admin-paid-out-total', formatAdminUsdt(metrics.paid_withdrawal_usdt));
+                setText('admin-paid-out-count', `${Number(metrics.paid_withdrawals || 0).toLocaleString()} payouts marked paid`);
+                setText('admin-withdrawal-count', Number(metrics.withdrawal_requests || 0).toLocaleString());
+                setText('admin-pending-out-total', formatAdminUsdt(metrics.pending_withdrawal_usdt));
+                setText('admin-pending-out-count', `${Number(metrics.pending_withdrawals || 0).toLocaleString()} requests awaiting review`);
+                setText('admin-open-tickets', Number(metrics.pending_tickets || 0).toLocaleString());
+                setText('admin-pending-reviews', Number(metrics.pending_reviews || 0).toLocaleString());
+                const salesCaveat = document.getElementById('admin-sales-caveat');
+                if (salesCaveat) salesCaveat.hidden = !Number(metrics.unpriced_legacy_purchases);
+                const adminNav = document.getElementById('admin-nav-item');
+                if (adminNav) {
+                    const totalPending = Number(metrics.pending_withdrawals || 0) +
+                        Number(metrics.pending_tickets || 0) + Number(metrics.pending_reviews || 0);
+                    adminNav.innerHTML = `Admin Control${totalPending ? ` <span class="admin-nav-badge">${totalPending}</span>` : ''}`;
+                }
+
+                const events = Array.isArray(data.events) ? data.events : [];
+                renderAdminOperationsFeed(events);
+                const storageKey = `blastrr-admin-seen-operations:${connectedWallet?.toLowerCase() || ''}`;
+                let seenIds = [];
+                try {
+                    seenIds = JSON.parse(localStorage.getItem(storageKey) || '[]');
+                    if (!Array.isArray(seenIds)) seenIds = [];
+                } catch {
+                    seenIds = [];
+                }
+                const seen = new Set(seenIds);
+                const isInitialLoad = !adminOperationsLoaded;
+                const newEvents = isInitialLoad ? [] : events.filter(event => !seen.has(event.event_id));
+                events.forEach(event => seen.add(event.event_id));
+                try {
+                    localStorage.setItem(storageKey, JSON.stringify([...seen].slice(-100)));
+                } catch (storageError) {
+                    console.warn('Unable to persist admin activity notifications:', storageError);
+                }
+                adminOperationsLoaded = true;
+                newEvents.forEach(showAdminOperationsNotice);
+                if (newEvents.some(event => event.event_type === 'TICKET_OPENED')) loadAdminTickets();
+                if (newEvents.some(event => event.event_type.includes('PAYOUT_'))) loadAdminWithdrawals();
+                if (newEvents.some(event => event.event_type === 'REVIEW_PENDING')) loadAdminReviews();
+            } catch (error) {
+                console.error('Unable to refresh admin operations dashboard:', error);
+                const feed = document.getElementById('admin-operations-feed');
+                if (feed && !feed.querySelector('.admin-operations-event')) {
+                    feed.innerHTML = `<li class="support-feedback">${escapeHTML(error.message)}</li>`;
+                }
+            } finally {
+                adminOperationsPollInFlight = false;
+            }
+        }
+
+        function startAdminOperationsPolling() {
+            if (adminOperationsPollTimer) clearInterval(adminOperationsPollTimer);
+            adminOperationsPollTimer = setInterval(() => {
+                if (currentWalletIsAdmin && dashboardAuthenticated &&
+                    document.getElementById('adminView')?.classList.contains('active')) {
+                    loadAdminOperationsDashboard();
+                }
+            }, 15000);
+        }
+
+        function renderWithdrawalInvestigation(withdrawal) {
+            const accounts = withdrawal.accounts || [];
+            const loginIps = withdrawal.login_ips || [];
+            const relatedWallets = withdrawal.related_wallets || [];
+            const referralTransactions = withdrawal.referral_transactions || [];
+            const accountDetails = accounts.length
+                ? accounts.map(account => `
+                    <details class="admin-withdrawal-account">
+                        <summary>${escapeHTML(account.plan_name || 'Trading account')} · ${escapeHTML(account.id)} · ${escapeHTML(account.status)} · ${account.trades?.length || 0} trades</summary>
+                        <p class="support-ticket-meta">Balance ${escapeHTML(formatAdminUsdt(account.current_balance))} · Equity ${escapeHTML(formatAdminUsdt(account.current_equity))}${Number(account.admin_frozen) ? ' · Admin frozen' : ''}</p>
+                        ${renderAdminTradeTable(account.trades || [])}
+                    </details>
+                `).join('')
+                : '<p class="support-note">No trading accounts found for this wallet.</p>';
+            const ipDetails = loginIps.length
+                ? `<ul>${loginIps.map(ip => `<li><code>${escapeHTML(ip.ip_address)}</code> · ${Number(ip.login_count)} logins · ${escapeHTML(ip.first_seen)} to ${escapeHTML(ip.last_seen)}</li>`).join('')}</ul>`
+                : '<p class="support-note">No login IP history in the 180-day retention window.</p>';
+            const relatedDetails = relatedWallets.length
+                ? `<ul>${relatedWallets.map(related => `
+                    <li><code>${escapeHTML(related.wallet_address)}</code>${related.username ? ` · @${escapeHTML(related.username)}` : ''}
+                        · shared IP <code>${escapeHTML(related.ip_address)}</code>
+                        ${related.accounts?.length ? `<ul>${related.accounts.map(account => `<li>${escapeHTML(account.plan_name || 'Trading account')} · <code>${escapeHTML(account.account_id)}</code> · ${escapeHTML(account.status)}</li>`).join('')}</ul>` : ' · no trading accounts'}
+                    </li>
+                `).join('')}</ul>`
+                : '<p class="support-note">No other wallets with retained login records were found on these IPs.</p>';
+            const referralDetails = referralTransactions.length
+                ? `${withdrawal.referral_transactions_exact ? '' : '<p class="support-note">This historical withdrawal has no recorded transaction allocation; the full commission ledger below is context only and cannot be attributed exactly to this payout.</p>'}${referralTransactions.map(referral => {
+                    const explorerUrl = getTransactionExplorerUrl(referral.purchase_chain_id, referral.purchase_tx_hash);
+                    return `
+                        <article class="admin-referral-evidence">
+                            <strong>Level ${Number(referral.level)} referral · ${escapeHTML(referral.plan_name || 'Account purchase')}</strong>
+                            <p class="support-ticket-meta">Referee <code>${escapeHTML(referral.referee_wallet)}</code> · Commission ${escapeHTML(formatAdminUsdt(referral.commission_earned))} (${Number(referral.commission_pct)}%)${referral.allocated_amount != null ? ` · Allocated to this withdrawal ${escapeHTML(formatAdminUsdt(referral.allocated_amount))}` : ''} · Purchase ${escapeHTML(formatAdminUsdt(referral.purchase_amount_usdt ?? referral.paid_amount))} · ${escapeHTML(referral.created_at)}</p>
+                            ${referral.purchase_tx_hash
+                                ? `<p>Purchase transaction: ${explorerUrl ? `<a href="${escapeHTML(explorerUrl)}" target="_blank" rel="noopener noreferrer">${escapeHTML(referral.purchase_tx_hash)}</a>` : `<code>${escapeHTML(referral.purchase_tx_hash)}</code> · no verified explorer configured for chain ${escapeHTML(referral.purchase_chain_id)}`}</p>`
+                                : '<p class="support-note">Historical commission has no unambiguous linked purchase transaction.</p>'}
+                        </article>
+                    `;
+                }).join('')}`
+                : '<p class="support-note">No linked referral commissions were found.</p>';
+            return `
+                <details class="admin-withdrawal-investigation">
+                    <summary>Investigation · ${accounts.length} accounts · ${loginIps.length} login IPs · ${relatedWallets.length} related wallets</summary>
+                    <p class="support-ticket-meta">${withdrawal.username ? `@${escapeHTML(withdrawal.username)} · ` : ''}<code>${escapeHTML(withdrawal.wallet_address)}</code></p>
+                    ${withdrawal.user_ip ? `<p>Withdrawal request IP: <code>${escapeHTML(withdrawal.user_ip)}</code></p>` : ''}
+                    <details><summary>Accounts and trade history</summary>${accountDetails}</details>
+                    <details><summary>Login IP history</summary>${ipDetails}</details>
+                    <details><summary>Other wallets and accounts sharing those IPs</summary>${relatedDetails}</details>
+                    ${withdrawal.type === 'COMMISSION' ? `<details><summary>Transactions creating this referral payout</summary>${referralDetails}</details>` : ''}
+                </details>
+            `;
+        }
+
+        async function loadAdminSupportStaff() {
+            const container = document.getElementById('admin-support-staff-list');
+            const form = document.getElementById('admin-support-staff-form');
+            if (!container) return;
+            if (form && form.dataset.listenerAttached !== 'true') {
+                form.dataset.listenerAttached = 'true';
+                form.addEventListener('submit', async event => {
+                    event.preventDefault();
+                    const feedback = document.getElementById('admin-support-staff-feedback');
+                    if (feedback) feedback.textContent = '';
+                    const wallet = document.getElementById('admin-support-staff-wallet')?.value.trim();
+                    const role = document.getElementById('admin-support-staff-role')?.value;
+                    try {
+                        const authorization = await signedTradeAuthorization();
+                        const response = await fetch('/api/admin/support-staff/action', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ ...authorization, staff_wallet: wallet, role, action: 'ADD' })
+                        });
+                        const data = await readAdminApiResponse(response, '/api/admin/support-staff/action');
+                        if (!response.ok) throw new Error(data.error || 'Unable to add support staff.');
+                        if (feedback) feedback.textContent = `Support access added for ${wallet}.`;
+                        form.reset();
+                        await loadAdminSupportStaff();
+                    } catch (error) {
+                        console.error(error);
+                        if (feedback) feedback.textContent = error.message;
+                    }
+                });
+            }
+            try {
+                const response = await walletFetch('/api/admin/support-staff');
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Unable to load support staff.');
+                if (!data.staff?.length) {
+                    container.innerHTML = '<p class="account-chart-empty">No active support staff.</p>';
+                    return;
+                }
+                container.innerHTML = data.staff.map(member => `
+                    <article class="support-ticket-card admin-support-staff-card">
+                        <div>
+                            <strong>Support</strong>
+                            <p class="support-ticket-meta"><code>${escapeHTML(member.wallet_address)}</code><br>
+                                Added ${escapeHTML(new Date(member.created_at).toLocaleString())}</p>
+                        </div>
+                        <button class="btn-sell" type="button" data-support-staff-remove="${escapeHTML(member.wallet_address)}">Remove access</button>
+                    </article>
+                `).join('');
+                container.onclick = async event => {
+                    const button = event.target.closest('[data-support-staff-remove]');
+                    if (!button || !confirm(`Remove Support access from ${button.dataset.supportStaffRemove}?`)) return;
+                    try {
+                        const authorization = await signedTradeAuthorization();
+                        const response = await fetch('/api/admin/support-staff/action', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                ...authorization,
+                                staff_wallet: button.dataset.supportStaffRemove,
+                                action: 'REMOVE'
+                            })
+                        });
+                        const result = await readAdminApiResponse(response, '/api/admin/support-staff/action');
+                        if (!response.ok) throw new Error(result.error || 'Unable to remove support staff.');
+                        await loadAdminSupportStaff();
+                    } catch (error) {
+                        console.error(error);
+                        alert(error.message);
+                    }
+                };
+            } catch (error) {
+                console.error(error);
+                container.innerHTML = `<p class="support-feedback">${escapeHTML(error.message)}</p>`;
+            }
+        }
+
+        async function loadSupportStaffTickets() {
+            const container = document.getElementById('support-staff-ticket-list');
+            if (!container) return;
+            try {
+                const response = await walletFetch('/api/staff/tickets');
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Unable to load support tickets.');
+                if (!data.tickets?.length) {
+                    container.innerHTML = '<p class="account-chart-empty">No open support tickets.</p>';
+                    return;
+                }
+                container.innerHTML = data.tickets.map(ticket => `
+                    <article class="support-ticket-card" data-staff-ticket-id="${escapeHTML(ticket.id)}">
+                        <div class="support-ticket-heading">
+                            <h3>${escapeHTML(ticket.subject)}</h3>
+                            <span class="support-status ${supportStatusClass(ticket.status)}">${supportStatusLabel(ticket.status)}</span>
+                        </div>
+                        <p class="support-ticket-meta">
+                            ${escapeHTML(ticket.username || 'Trader')} · <code>${escapeHTML(ticket.wallet_address)}</code><br>
+                            ${ticket.account_id ? `${escapeHTML(ticket.plan_name || 'Account')} · ${escapeHTML(ticket.account_id)}` : 'General support'} · Created ${escapeHTML(new Date(ticket.created_at).toLocaleString())}
+                        </p>
+                        ${renderSupportMessages(ticket.messages || [])}
+                        <div class="support-ticket-actions">
+                            <label for="staff-ticket-reply-${escapeHTML(ticket.id)}">Reply</label>
+                            <textarea id="staff-ticket-reply-${escapeHTML(ticket.id)}" maxlength="5000" rows="4" placeholder="Write a response or ask for the information needed to resolve this ticket."></textarea>
+                            <div class="support-ticket-buttons">
+                                <button class="btn-wallet" type="button" data-staff-ticket-action="REPLY">Send reply</button>
+                                <button class="btn-sell" type="button" data-staff-ticket-action="CLOSE">Close ticket</button>
+                            </div>
+                        </div>
+                    </article>
+                `).join('');
+                container.onclick = event => {
+                    const button = event.target.closest('[data-staff-ticket-action]');
+                    const card = button?.closest('[data-staff-ticket-id]');
+                    if (button && card) processSupportStaffTicket(card.dataset.staffTicketId, button.dataset.staffTicketAction, card);
+                };
+            } catch (error) {
+                console.error(error);
+                container.innerHTML = `<p class="support-feedback">${escapeHTML(error.message)}</p>`;
+            }
+        }
+
+        async function processSupportStaffTicket(ticketId, action, card) {
+            const message = card.querySelector('textarea')?.value.trim() || '';
+            if (action === 'REPLY' && !message) return alert('Write a reply before sending it.');
+            if (action === 'CLOSE' && !confirm('Close this support ticket?')) return;
+            try {
+                const response = await walletFetch('/api/staff/tickets/action', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(authorization)
+                    body: JSON.stringify({ ticket_id: ticketId, action, message })
                 });
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Unable to update support ticket.');
+                await loadSupportStaffTickets();
+            } catch (error) {
+                console.error(error);
+                alert(error.message);
+            }
+        }
+
+        async function loadSupportStaffReviews() {
+            const container = document.getElementById('support-staff-review-list');
+            if (!container) return;
+            try {
+                const response = await walletFetch('/api/staff/reviews');
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Unable to load pending reviews.');
+                if (!data.reviews?.length) {
+                    container.innerHTML = '<p class="account-chart-empty">No reviews awaiting moderation.</p>';
+                    return;
+                }
+                container.innerHTML = data.reviews.map(review => `
+                    <article class="support-review-card">
+                        <div class="support-review-heading">
+                            <div><h3>${escapeHTML(review.username)}</h3>${renderStarRating(review.rating)}</div>
+                            <div class="admin-review-actions">
+                                <button class="btn-wallet" type="button" data-staff-review-action="APPROVE" data-review-account="${escapeHTML(review.account_id)}">Approve</button>
+                                <button class="btn-sell" type="button" data-staff-review-action="REJECT" data-review-account="${escapeHTML(review.account_id)}">Reject</button>
+                            </div>
+                        </div>
+                        <p class="support-review-meta">${escapeHTML(review.plan_name || 'Purchased account')} · <code>${escapeHTML(review.account_id)}</code><br>
+                            <code>${escapeHTML(review.wallet_address)}</code> · Submitted ${escapeHTML(new Date(review.updated_at).toLocaleString())}</p>
+                        <p class="support-review-comment">${escapeHTML(review.comment)}</p>
+                    </article>
+                `).join('');
+                container.onclick = async event => {
+                    const button = event.target.closest('[data-staff-review-action]');
+                    if (!button) return;
+                    if (button.dataset.staffReviewAction === 'REJECT' && !confirm('Reject this review?')) return;
+                    try {
+                        const response = await walletFetch('/api/staff/reviews/action', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                review_account_id: button.dataset.reviewAccount,
+                                action: button.dataset.staffReviewAction
+                            })
+                        });
+                        const result = await response.json();
+                        if (!response.ok) throw new Error(result.error || 'Unable to moderate review.');
+                        await loadSupportStaffReviews();
+                    } catch (error) {
+                        console.error(error);
+                        alert(error.message);
+                    }
+                };
+            } catch (error) {
+                console.error(error);
+                container.innerHTML = `<p class="support-feedback">${escapeHTML(error.message)}</p>`;
+            }
+        }
+
+        async function loadAdminWithdrawals() {
+            try {
+                const res = await walletFetch('/api/admin/withdrawals');
                 const data = await readAdminApiResponse(res, '/api/admin/withdrawals');
                 const tbody = document.getElementById('admin-payout-queue');
                 if (!tbody) return;
@@ -4538,8 +5007,9 @@ let connectedWallet = null;
                         ${w.type === 'ACCOUNT' ? `<button class="btn-sell" style="padding: 4px 10px; font-size: 11px;" data-admin-account-id="${escapeHTML(w.account_id)}" data-admin-account-action="FREEZE">Freeze account</button>` : ''}
                     ` : `<span style="color: #9ca3af;">Processed</span>`;
                     const accountDetails = w.type === 'ACCOUNT'
-                        ? `<strong>${escapeHTML(w.plan_name)}</strong><br>Balance: $${Number(w.account_balance).toFixed(2)}<br>${Number(w.admin_frozen) ? 'Admin freeze: ' + escapeHTML(w.admin_freeze_reason || 'active') : (w.trades?.some(trade => trade.status === 'OPEN') ? 'Open trades: ' + w.trades.filter(trade => trade.status === 'OPEN').length : 'No open trades')}<details><summary>Review ${w.trades?.length || 0} trades</summary>${renderAdminTradeTable(w.trades || [])}</details>`
-                        : escapeHTML(w.plan_name);
+                        ? `<strong>${escapeHTML(w.plan_name)}</strong><br>Balance: ${escapeHTML(formatAdminUsdt(w.account_balance))}<br>${Number(w.admin_frozen) ? 'Admin freeze: ' + escapeHTML(w.admin_freeze_reason || 'active') : (w.trades?.some(trade => trade.status === 'OPEN') ? 'Open trades: ' + w.trades.filter(trade => trade.status === 'OPEN').length : 'No open trades')}`
+                        : `<strong>${escapeHTML(w.plan_name)}</strong>`;
+                    const investigationHtml = renderWithdrawalInvestigation(w);
                     const amountDetails = w.type === 'ACCOUNT'
                         ? `<strong>$${Number(w.amount).toFixed(2)} gross</strong><br>User: $${Number(w.user_amount).toFixed(2)}<br>Admin: $${Number(w.admin_share).toFixed(2)}`
                         : `<strong>$${Number(w.amount).toFixed(2)}</strong>`;
@@ -4547,9 +5017,9 @@ let connectedWallet = null;
                     tbody.innerHTML += `
                         <tr>
                             <td><code>${escapeHTML(w.id)}</code></td>
-                            <td><span style="color: ${w.type === 'COMMISSION' ? '#c084fc' : '#60a5fa'}; font-weight: bold;">${escapeHTML(w.type)}</span></td>
-                            <td><code style="color: #c084fc;" title="${escapeHTML(w.wallet_address)}">${escapeHTML(w.wallet_address.substring(0,6))}...${escapeHTML(w.wallet_address.slice(-4))}</code></td>
-                            <td>${accountDetails}</td>
+                            <td><span style="color: ${w.type === 'COMMISSION' ? '#c084fc' : '#60a5fa'}; font-weight: bold;">${w.type === 'COMMISSION' ? 'Referral' : 'Trading performance'}</span></td>
+                            <td>${w.username ? `<strong>@${escapeHTML(w.username)}</strong><br>` : ''}<code style="color: #c084fc;" title="${escapeHTML(w.wallet_address)}">${escapeHTML(String(w.wallet_address || '').substring(0,6))}...${escapeHTML(String(w.wallet_address || '').slice(-4))}</code></td>
+                            <td>${accountDetails}${investigationHtml}</td>
                             <td>${amountDetails}</td>
                             <td><span style="color: ${statusColor}; font-weight: bold;">${w.status}</span></td>
                             <td>${actionsHtml}</td>
@@ -4931,12 +5401,7 @@ let connectedWallet = null;
             const container = document.getElementById('admin-ticket-list');
             if (!container) return;
             try {
-                const authorization = await signedTradeAuthorization();
-                const response = await fetch('/api/admin/tickets', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(authorization)
-                });
+                const response = await walletFetch('/api/admin/tickets');
                 const data = await readAdminApiResponse(response, '/api/admin/tickets');
                 if (!response.ok) throw new Error(data.error || 'Unable to load support tickets.');
                 if (!data.tickets?.length) {
@@ -5009,12 +5474,7 @@ let connectedWallet = null;
             const container = document.getElementById('admin-review-list');
             if (!container) return;
             try {
-                const authorization = await signedTradeAuthorization();
-                const response = await fetch('/api/admin/reviews', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(authorization)
-                });
+                const response = await walletFetch('/api/admin/reviews');
                 const data = await readAdminApiResponse(response, '/api/admin/reviews');
                 if (!response.ok) throw new Error(data.error || 'Unable to load reviews.');
                 if (!data.reviews?.length) {

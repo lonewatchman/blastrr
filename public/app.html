@@ -99,6 +99,7 @@
                 </div>
             </details>
             <button id="admin-nav-item" class="nav-tab admin-tab" onclick="switchView('adminView')">Admin Control</button>
+            <button id="support-nav-item" class="nav-tab" onclick="switchView('supportStaffView')" hidden>Support</button>
         </nav>
 
         <div class="header-actions">
@@ -818,6 +819,33 @@
             </div>
         </section>
 
+        <section id="supportStaffView" class="view-panel workspace-view" hidden>
+            <div class="app-page-heading">
+                <div><span class="battlepass-eyebrow">SUPPORT WORKSPACE</span><h1>Support</h1></div>
+                <p class="support-note">Manage customer tickets and pending homepage reviews.</p>
+            </div>
+            <div class="admin-section-tabs" role="tablist" aria-label="Support areas">
+                <button id="support-staff-tickets-tab" class="admin-section-tab active" role="tab" aria-selected="true" onclick="switchSupportStaffSection('tickets')">Tickets</button>
+                <button id="support-staff-reviews-tab" class="admin-section-tab" role="tab" aria-selected="false" onclick="switchSupportStaffSection('reviews')">Reviews</button>
+            </div>
+            <div id="support-staff-tickets-panel" class="admin-section-panel">
+                <div class="card">
+                    <div class="card-title">Open support tickets</div>
+                    <div id="support-staff-ticket-list" class="support-card-list" aria-live="polite">
+                        <p class="account-chart-empty">Loading support tickets...</p>
+                    </div>
+                </div>
+            </div>
+            <div id="support-staff-reviews-panel" class="admin-section-panel" hidden>
+                <div class="card">
+                    <div class="card-title">Reviews awaiting moderation</div>
+                    <div id="support-staff-review-list" class="support-card-list" aria-live="polite">
+                        <p class="account-chart-empty">Loading pending reviews...</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <!-- 6. ADMIN CONTROL VIEW -->
         <section id="adminView" class="view-panel workspace-view">
             <div class="app-page-heading">
@@ -831,6 +859,25 @@
                 <button id="admin-maintenance-tab" class="admin-section-tab" role="tab" aria-selected="false" onclick="switchAdminSection('admin-maintenance-panel')">Maintenance</button>
             </div>
             <div id="admin-operations-panel" class="admin-section-panel">
+            <div id="admin-ops-notices" class="admin-ops-notices" role="status" aria-live="polite"></div>
+            <div class="admin-dashboard-grid" aria-label="Operations summary">
+                <article class="admin-dashboard-metric"><span>Active wallet sessions</span><strong id="admin-active-wallets">—</strong></article>
+                <article class="admin-dashboard-metric"><span>Wallets connected (tracked)</span><strong id="admin-all-time-wallets">—</strong></article>
+                <article class="admin-dashboard-metric"><span>Verified sales</span><strong id="admin-sales-total">—</strong><small id="admin-sales-count"></small></article>
+                <article class="admin-dashboard-metric"><span>Paid withdrawals</span><strong id="admin-paid-out-total">—</strong><small id="admin-paid-out-count"></small></article>
+                <article class="admin-dashboard-metric"><span>Withdrawal requests</span><strong id="admin-withdrawal-count">—</strong></article>
+                <article class="admin-dashboard-metric"><span>Pending withdrawals</span><strong id="admin-pending-out-total">—</strong><small id="admin-pending-out-count"></small></article>
+                <article class="admin-dashboard-metric"><span>Open support tickets</span><strong id="admin-open-tickets">—</strong></article>
+                <article class="admin-dashboard-metric"><span>Pending reviews</span><strong id="admin-pending-reviews">—</strong></article>
+            </div>
+            <p id="admin-sales-caveat" class="support-note" hidden>Some older verified purchases predate exact amount tracking and are excluded from the sales total.</p>
+            <p class="support-note">All-time wallet counts include existing profile records and successful signed sessions recorded from this release onward; older sessions outside retained IP history cannot be reconstructed.</p>
+            <div class="card admin-operations-activity">
+                <div class="card-title">Live operations activity</div>
+                <ol id="admin-operations-feed" class="admin-operations-feed" aria-live="polite">
+                    <li class="account-chart-empty">Loading recent activity...</li>
+                </ol>
+            </div>
             <div class="card admin-hedging-review">
                 <div class="card-title">Hedging alerts</div>
                 <p class="support-note">Opposite positions on the same market across a user’s accounts are prohibited. Review the user’s support ticket and resolve the issue before unfreezing the involved accounts from their user card.</p>
@@ -897,6 +944,25 @@
                 <div class="card-title">Support ticket queue</div>
                 <div id="admin-ticket-list" class="support-card-list">
                     <p class="account-chart-empty">Loading support tickets...</p>
+                </div>
+            </div>
+            <div class="card admin-support-staff-management">
+                <div class="card-title">Support staff access</div>
+                <p class="support-note">Support staff receive a separate workspace limited to Tickets and Reviews. Add or remove access by wallet address.</p>
+                <form id="admin-support-staff-form" class="admin-search-form">
+                    <div class="form-group">
+                        <label for="admin-support-staff-wallet">Staff wallet address</label>
+                        <input id="admin-support-staff-wallet" type="text" inputmode="text" maxlength="42" required placeholder="0x...">
+                    </div>
+                    <div class="form-group">
+                        <label for="admin-support-staff-role">Role</label>
+                        <select id="admin-support-staff-role"><option value="SUPPORT">Support</option></select>
+                    </div>
+                    <button class="btn-wallet" type="submit">Add support staff</button>
+                </form>
+                <p id="admin-support-staff-feedback" class="support-feedback" role="status" aria-live="polite"></p>
+                <div id="admin-support-staff-list" class="support-card-list">
+                    <p class="account-chart-empty">Loading support staff...</p>
                 </div>
             </div>
             <div class="card admin-review-management">

@@ -39,6 +39,10 @@ function initTables() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
     db.run('CREATE INDEX IF NOT EXISTS idx_user_login_ip_events_wallet_created ON user_login_ip_events(wallet_address, created_at DESC)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_user_login_ip_events_ip_created ON user_login_ip_events(ip_address, created_at DESC)');
+    db.run(
+      'INSERT OR IGNORE INTO users (wallet_address) SELECT DISTINCT wallet_address FROM user_login_ip_events WHERE wallet_address IS NOT NULL AND wallet_address != \'\''
+    );
 
     db.run(`CREATE TABLE IF NOT EXISTS wallet_sessions (
       token_hash TEXT PRIMARY KEY,
@@ -162,6 +166,24 @@ function initTables() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
 
+    db.run(`CREATE TABLE IF NOT EXISTS support_staff (
+      wallet_address TEXT PRIMARY KEY,
+      role TEXT NOT NULL DEFAULT 'SUPPORT' CHECK(role = 'SUPPORT'),
+      active INTEGER NOT NULL DEFAULT 1,
+      created_by TEXT NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_by TEXT,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`);
+    db.run(`CREATE TABLE IF NOT EXISTS support_staff_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      wallet_address TEXT NOT NULL,
+      admin_wallet TEXT NOT NULL,
+      action TEXT NOT NULL CHECK(action IN ('ADD', 'REMOVE')),
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`);
+    db.run('CREATE INDEX IF NOT EXISTS idx_support_staff_events_wallet_created ON support_staff_events(wallet_address, created_at DESC)');
+
     db.run(`CREATE TABLE IF NOT EXISTS wallet_disclaimer_acceptances (
       wallet_address TEXT NOT NULL,
       version TEXT NOT NULL,
@@ -175,6 +197,7 @@ function initTables() {
       wallet_address TEXT NOT NULL,
       account_id TEXT NOT NULL,
       quantity INTEGER NOT NULL DEFAULT 1,
+      amount_usdt REAL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
 
@@ -291,6 +314,16 @@ function initTables() {
       paid_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
+    db.run(`CREATE TABLE IF NOT EXISTS referral_withdrawal_allocations (
+      withdrawal_id TEXT NOT NULL,
+      referral_id INTEGER NOT NULL,
+      amount REAL NOT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(withdrawal_id, referral_id),
+      FOREIGN KEY(withdrawal_id) REFERENCES referral_withdrawals(id),
+      FOREIGN KEY(referral_id) REFERENCES referrals(id)
+    )`);
+    db.run('CREATE INDEX IF NOT EXISTS idx_referral_withdrawal_allocations_referral ON referral_withdrawal_allocations(referral_id)');
 
     db.run(`CREATE TABLE IF NOT EXISTS referrals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -301,6 +334,8 @@ function initTables() {
       commission_earned REAL,
       commission_pct REAL DEFAULT 2,
       level INTEGER NOT NULL DEFAULT 1,
+      purchase_tx_hash TEXT,
+      purchase_chain_id INTEGER,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
 
@@ -437,6 +472,7 @@ function initTables() {
       author_role TEXT NOT NULL CHECK(author_role IN ('USER', 'ADMIN')),
       author_name TEXT NOT NULL,
       body TEXT NOT NULL,
+      author_wallet TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(ticket_id) REFERENCES support_tickets(id)
     )`);
@@ -448,14 +484,24 @@ function initTables() {
       rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
       comment TEXT NOT NULL,
       published INTEGER NOT NULL DEFAULT 0,
+      moderation_status TEXT NOT NULL DEFAULT 'PENDING' CHECK(moderation_status IN ('PENDING', 'APPROVED', 'HIDDEN', 'REJECTED')),
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(account_id) REFERENCES accounts(id)
     )`);
+    db.run(`CREATE TABLE IF NOT EXISTS review_moderation_actions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_id TEXT NOT NULL,
+      reviewer_wallet TEXT NOT NULL,
+      action TEXT NOT NULL CHECK(action IN ('APPROVE', 'HIDE', 'REJECT')),
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    )`);
+    db.run('CREATE INDEX IF NOT EXISTS idx_review_moderation_actions_account_created ON review_moderation_actions(account_id, created_at DESC)');
 
     db.run('CREATE INDEX IF NOT EXISTS idx_support_tickets_wallet_updated ON support_tickets(wallet_address, updated_at DESC)');
     db.run('CREATE INDEX IF NOT EXISTS idx_support_tickets_status_updated ON support_tickets(status, updated_at DESC)');
     db.run('CREATE INDEX IF NOT EXISTS idx_support_ticket_messages_ticket ON support_ticket_messages(ticket_id, created_at)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_user_reviews_moderation_updated ON user_reviews(moderation_status, updated_at DESC)');
     db.run('CREATE INDEX IF NOT EXISTS idx_promo_codes_created_at ON promo_codes(created_at DESC)');
     db.run('CREATE INDEX IF NOT EXISTS idx_battlepass_claims_wallet ON battlepass_task_claims(wallet_address, created_at DESC)');
     db.run('CREATE INDEX IF NOT EXISTS idx_battlepass_events_wallet ON battlepass_events(wallet_address, created_at DESC)');
@@ -686,12 +732,42 @@ function initTables() {
       const existing = new Set(columns.map(column => column.name));
       const additions = [
         ['commission_pct', 'REAL DEFAULT 2'],
-        ['level', 'INTEGER NOT NULL DEFAULT 1']
+        ['level', 'INTEGER NOT NULL DEFAULT 1'],
+        ['purchase_tx_hash', 'TEXT'],
+        ['purchase_chain_id', 'INTEGER']
       ].filter(([name]) => !existing.has(name));
       const addNextColumn = index => {
         if (index >= additions.length) {
           db.run('CREATE INDEX IF NOT EXISTS idx_referrals_referrer_level_created ON referrals(referrer_wallet, level, created_at DESC)');
           db.run('CREATE INDEX IF NOT EXISTS idx_referrals_referee_level_created ON referrals(referee_wallet, level, created_at)');
+          db.run(
+            `UPDATE referrals
+             SET purchase_tx_hash = (
+                   SELECT p.tx_hash FROM purchases p
+                   JOIN accounts a ON a.id = p.account_id
+                   WHERE LOWER(p.wallet_address) = LOWER(referrals.referee_wallet)
+                     AND a.plan_id = referrals.plan_id
+                     AND ABS(strftime('%s', p.created_at) - strftime('%s', referrals.created_at)) <= 1
+                   LIMIT 1
+                 ),
+                 purchase_chain_id = (
+                   SELECT p.chain_id FROM purchases p
+                   JOIN accounts a ON a.id = p.account_id
+                   WHERE LOWER(p.wallet_address) = LOWER(referrals.referee_wallet)
+                     AND a.plan_id = referrals.plan_id
+                     AND ABS(strftime('%s', p.created_at) - strftime('%s', referrals.created_at)) <= 1
+                   LIMIT 1
+                 )
+             WHERE purchase_tx_hash IS NULL
+               AND (SELECT COUNT(*) FROM purchases p
+                    JOIN accounts a ON a.id = p.account_id
+                    WHERE LOWER(p.wallet_address) = LOWER(referrals.referee_wallet)
+                      AND a.plan_id = referrals.plan_id
+                      AND ABS(strftime('%s', p.created_at) - strftime('%s', referrals.created_at)) <= 1) = 1`,
+            backfillErr => {
+              if (backfillErr) console.error('Unable to backfill unambiguous referral purchase provenance', backfillErr.message);
+            }
+          );
           return;
         }
         const [name, type] = additions[index];
@@ -711,13 +787,34 @@ function initTables() {
         console.error('Unable to inspect purchases schema', err.message);
         return;
       }
-      if (columns.some(column => column.name === 'quantity')) return;
-      db.run(
-        'ALTER TABLE purchases ADD COLUMN quantity INTEGER NOT NULL DEFAULT 1',
-        alterErr => {
-          if (alterErr) console.error('Unable to add purchases.quantity', alterErr.message);
-        }
-      );
+      const existing = new Set(columns.map(column => column.name));
+      const additions = [
+        ['quantity', 'INTEGER NOT NULL DEFAULT 1'],
+        ['amount_usdt', 'REAL']
+      ].filter(([name]) => !existing.has(name));
+      const addNextColumn = index => {
+        if (index >= additions.length) return;
+        const [name, type] = additions[index];
+        db.run(`ALTER TABLE purchases ADD COLUMN ${name} ${type}`, alterErr => {
+          if (alterErr) {
+            console.error(`Unable to add purchases.${name}`, alterErr.message);
+            return;
+          }
+          addNextColumn(index + 1);
+        });
+      };
+      addNextColumn(0);
+    });
+
+    db.all("PRAGMA table_info(support_ticket_messages)", (err, columns) => {
+      if (err) {
+        console.error('Unable to inspect support ticket message schema', err.message);
+        return;
+      }
+      if (columns.some(column => column.name === 'author_wallet')) return;
+      db.run('ALTER TABLE support_ticket_messages ADD COLUMN author_wallet TEXT', alterErr => {
+        if (alterErr) console.error('Unable to add support_ticket_messages.author_wallet', alterErr.message);
+      });
     });
 
     db.all("PRAGMA table_info(accounts)", (err, columns) => {
@@ -783,10 +880,29 @@ function initTables() {
           return;
         }
         if (columns.some(column => column.name === 'account_id')) {
-          db.run('CREATE INDEX IF NOT EXISTS idx_user_reviews_published_updated ON user_reviews(published, updated_at DESC)', (indexErr) => {
-            if (indexErr) console.error('Unable to index user reviews', indexErr.message);
-          });
-          return;
+          const ensureModerationColumn = () => {
+            if (columns.some(column => column.name === 'moderation_status')) {
+              db.run(
+                "UPDATE user_reviews SET moderation_status = 'APPROVED' WHERE published = 1 AND moderation_status = 'PENDING'",
+                updateErr => {
+                  if (updateErr) console.error('Unable to initialize existing review moderation states', updateErr.message);
+                }
+              );
+              db.run('CREATE INDEX IF NOT EXISTS idx_user_reviews_published_updated ON user_reviews(published, updated_at DESC)');
+              db.run('CREATE INDEX IF NOT EXISTS idx_user_reviews_moderation_updated ON user_reviews(moderation_status, updated_at DESC)');
+              return;
+            }
+            db.run("ALTER TABLE user_reviews ADD COLUMN moderation_status TEXT NOT NULL DEFAULT 'PENDING'", alterErr => {
+              if (alterErr) return console.error('Unable to add user_reviews.moderation_status', alterErr.message);
+              db.run("UPDATE user_reviews SET moderation_status = 'APPROVED' WHERE published = 1", updateErr => {
+                if (updateErr) console.error('Unable to initialize existing review moderation states', updateErr.message);
+                db.run('CREATE INDEX IF NOT EXISTS idx_user_reviews_published_updated ON user_reviews(published, updated_at DESC)');
+                db.run('CREATE INDEX IF NOT EXISTS idx_user_reviews_moderation_updated ON user_reviews(moderation_status, updated_at DESC)');
+              });
+            });
+          };
+          if (columns.some(column => column.name === 'moderation_status')) return ensureModerationColumn();
+          return ensureModerationColumn();
         }
 
         db.serialize(() => {
@@ -807,18 +923,21 @@ function initTables() {
                 rating INTEGER NOT NULL CHECK(rating BETWEEN 1 AND 5),
                 comment TEXT NOT NULL,
                 published INTEGER NOT NULL DEFAULT 0,
+                moderation_status TEXT NOT NULL DEFAULT 'PENDING',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY(account_id) REFERENCES accounts(id)
               )`, (createErr) => {
                 if (createErr) return rollback('Unable to create account-linked reviews table', createErr);
-                db.run(`INSERT INTO user_reviews (account_id, wallet_address, username, rating, comment, published, created_at, updated_at)
+                db.run(`INSERT INTO user_reviews (account_id, wallet_address, username, rating, comment, published, moderation_status, created_at, updated_at)
                   SELECT (SELECT a.id FROM accounts a
                           JOIN purchases p ON p.account_id = a.id
                             AND LOWER(p.wallet_address) = LOWER(a.wallet_address)
                           WHERE LOWER(a.wallet_address) = LOWER(old.wallet_address)
                           ORDER BY a.created_at, a.id LIMIT 1),
-                         old.wallet_address, old.username, old.rating, old.comment, old.published, old.created_at, old.updated_at
+                         old.wallet_address, old.username, old.rating, old.comment, old.published,
+                         CASE WHEN old.published = 1 THEN 'APPROVED' ELSE 'PENDING' END,
+                         old.created_at, old.updated_at
                   FROM user_reviews_legacy old
                   WHERE EXISTS (
                     SELECT 1 FROM accounts a
@@ -832,8 +951,11 @@ function initTables() {
                     if (dropErr) return rollback('Unable to finish user review migration', dropErr);
                     db.run('CREATE INDEX IF NOT EXISTS idx_user_reviews_published_updated ON user_reviews(published, updated_at DESC)', (indexErr) => {
                       if (indexErr) return rollback('Unable to index migrated user reviews', indexErr);
-                      db.run('COMMIT', (commitErr) => {
-                        if (commitErr) return rollback('Unable to commit user review migration', commitErr);
+                      db.run('CREATE INDEX IF NOT EXISTS idx_user_reviews_moderation_updated ON user_reviews(moderation_status, updated_at DESC)', moderationIndexErr => {
+                        if (moderationIndexErr) return rollback('Unable to index review moderation states', moderationIndexErr);
+                        db.run('COMMIT', (commitErr) => {
+                          if (commitErr) return rollback('Unable to commit user review migration', commitErr);
+                        });
                       });
                     });
                   });

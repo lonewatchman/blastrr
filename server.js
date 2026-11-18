@@ -141,6 +141,7 @@ const challengeLimiter = createRateLimiter(10, 60000);
 const walletSessionLimiter = createRateLimiter(10, 60000, req => `${req.ip || 'unknown'}:${req.walletAddress || 'unknown'}`);
 const walletActionLimiter = createRateLimiter(30, 60000, req => req.walletAddress || 'unknown');
 const chartLimiter = createRateLimiter(120, 60000, req => `${req.ip || 'unknown'}:${req.walletAddress || 'unknown'}`);
+const publicActivityLimiter = createRateLimiter(60, 60000);
 
 function seedPlans() {
   const initializeRewards = () => db.run(
@@ -495,7 +496,36 @@ function requireTradeSignature(req, res, next) {
     return res.status(401).json({ error: 'Wallet signature is invalid.' });
   }
   req.walletAddress = key;
-  next();
+  guardSupportStaffAccess(key, req, res, next);
+}
+
+const SUPPORT_STAFF_ALLOWED_ROUTES = new Set([
+  'POST /api/auth/wallet-session',
+  'POST /api/auth/wallet-session/reauthorize',
+  'GET /api/auth/role',
+  'GET /api/user/security-status',
+  'GET /api/user/disclaimer-consent',
+  'POST /api/user/disclaimer-consent',
+  'GET /api/staff/tickets',
+  'POST /api/staff/tickets/action',
+  'GET /api/staff/reviews',
+  'POST /api/staff/reviews/action'
+]);
+
+function guardSupportStaffAccess(wallet, req, res, next) {
+  db.get(
+    `SELECT 1 FROM support_staff s
+     WHERE LOWER(s.wallet_address) = LOWER(?) AND s.active = 1
+       AND NOT EXISTS (SELECT 1 FROM admins a WHERE LOWER(a.wallet_address) = LOWER(s.wallet_address))`,
+    [wallet],
+    (err, staff) => {
+      if (err) return res.status(500).json({ error: 'Unable to verify support staff access.' });
+      if (staff && !SUPPORT_STAFF_ALLOWED_ROUTES.has(`${req.method} ${req.path}`)) {
+        return res.status(403).json({ error: 'Support staff may only access support tickets and reviews.' });
+      }
+      next();
+    }
+  );
 }
 
 function requireWalletSession(req, res, next) {
@@ -527,8 +557,38 @@ function requireWalletSession(req, res, next) {
         req.walletSessionTokenHash = tokenHash;
         req.walletSessionReauthenticatedAt = session.reauthenticated_at;
         req.walletSessionIdleMs = Math.max(0, Date.now() - Number(session.last_seen_at));
-        next();
+        guardSupportStaffAccess(req.walletAddress, req, res, next);
       });
+    }
+  );
+}
+
+function requireSupportStaff(req, res, next) {
+  db.get(
+    `SELECT role FROM support_staff
+     WHERE LOWER(wallet_address) = LOWER(?) AND active = 1`,
+    [req.walletAddress],
+    (err, staff) => {
+      if (err) return res.status(500).json({ error: 'Unable to verify support staff role.' });
+      if (!staff || staff.role !== 'SUPPORT') {
+        return res.status(403).json({ error: 'Support staff access required.' });
+      }
+      next();
+    }
+  );
+}
+
+function requireAdminSession(req, res, next) {
+  db.get(
+    "SELECT role FROM admins WHERE LOWER(wallet_address) = LOWER(?)",
+    [req.walletAddress],
+    (err, admin) => {
+      if (err) return res.status(500).json({ error: 'Unable to verify administrator role.' });
+      if (!admin || !['SUPER_ADMIN', 'ADMIN'].includes(admin.role)) {
+        return res.status(403).json({ error: 'Administrator access required.' });
+      }
+      req.adminWalletAddress = req.walletAddress;
+      next();
     }
   );
 }
@@ -605,6 +665,8 @@ function recordWalletLogin(wallet, ipAddress, callback) {
             (lookupErr, previousLogin) => {
               if (lookupErr) return rollback(lookupErr);
               const isNewIp = previousLogin ? 0 : 1;
+            db.run('INSERT OR IGNORE INTO users (wallet_address) VALUES (?)', [wallet], userErr => {
+              if (userErr) return rollback(userErr);
               db.run(
                 `INSERT INTO user_login_ip_events (wallet_address, ip_address, is_new_ip)
                  VALUES (?, ?, ?)`,
@@ -614,6 +676,7 @@ function recordWalletLogin(wallet, ipAddress, callback) {
                   db.run('COMMIT', commitErr => commitErr ? rollback(commitErr) : callback(null, { isNewIp }));
                 }
               );
+            });
             }
           );
         }
@@ -1885,13 +1948,180 @@ app.post('/api/battlepass/rewards/claim', sensitiveLimiter, requireWalletSession
   });
 });
 
-app.get('/api/auth/role', (req, res) => {
-  const wallet = req.query.wallet;
-  if (!wallet) return res.json({ isAdmin: false });
-
-  db.get("SELECT * FROM admins WHERE LOWER(wallet_address) = LOWER(?)", [wallet], (err, admin) => {
-    res.json({ isAdmin: !!admin });
+app.get('/api/auth/role', requireWalletSession, (req, res) => {
+  const wallet = req.walletAddress;
+  db.get("SELECT role FROM admins WHERE LOWER(wallet_address) = LOWER(?)", [wallet], (err, admin) => {
+    if (err) return res.status(500).json({ error: 'Unable to load wallet roles.' });
+    db.get(
+      "SELECT role FROM support_staff WHERE LOWER(wallet_address) = LOWER(?) AND active = 1",
+      [wallet],
+      (staffErr, staff) => {
+        if (staffErr) return res.status(500).json({ error: 'Unable to load wallet roles.' });
+        res.json({
+          isAdmin: !!admin,
+          isSupportStaff: !admin && staff?.role === 'SUPPORT'
+        });
+      }
+    );
   });
+});
+
+app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSession, (req, res) => {
+  const activeCutoff = Date.now() - SESSION_IDLE_TIMEOUT_MS;
+  db.get(
+    `SELECT
+       (SELECT COUNT(DISTINCT LOWER(wallet_address)) FROM users) AS all_time_wallets,
+       (SELECT COUNT(DISTINCT LOWER(wallet_address)) FROM wallet_sessions
+        WHERE expires_at > ? AND last_seen_at > ? AND revoked_at IS NULL) AS active_wallets`,
+    [Date.now(), activeCutoff],
+    (walletErr, wallets) => {
+      if (walletErr) return res.status(500).json({ error: 'Unable to load wallet activity totals.' });
+      db.get(
+        `SELECT COUNT(*) AS verified_purchases,
+                COALESCE(SUM(amount_usdt), 0) AS sales_usdt,
+                SUM(CASE WHEN amount_usdt IS NULL THEN 1 ELSE 0 END) AS unpriced_legacy_purchases
+         FROM purchases WHERE chain_id > 0`,
+        [],
+        (salesErr, sales) => {
+          if (salesErr) return res.status(500).json({ error: 'Unable to load purchase totals.' });
+          db.get(
+            `SELECT COUNT(*) AS total_requests,
+                    SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) AS pending_count,
+                   SUM(CASE WHEN status = 'PAID' THEN 1 ELSE 0 END) AS paid_count,
+                    COALESCE(SUM(CASE WHEN status = 'PENDING' THEN payout_amount ELSE 0 END), 0) AS pending_usdt,
+                    COALESCE(SUM(CASE WHEN status = 'PAID' THEN payout_amount ELSE 0 END), 0) AS paid_usdt
+             FROM (
+               SELECT status, COALESCE(user_amount, ROUND(amount * 0.9, 2)) AS payout_amount
+               FROM withdrawals
+               UNION ALL
+               SELECT status, amount AS payout_amount FROM referral_withdrawals
+             ) payouts`,
+            [],
+            (withdrawalErr, withdrawals) => {
+              if (withdrawalErr) return res.status(500).json({ error: 'Unable to load withdrawal totals.' });
+              db.get(
+                `SELECT COUNT(*) AS pending_tickets FROM support_tickets WHERE status != 'CLOSED'`,
+                [],
+                (ticketErr, tickets) => {
+                  if (ticketErr) return res.status(500).json({ error: 'Unable to load ticket totals.' });
+                  db.get(
+                    `SELECT COUNT(*) AS pending_reviews FROM user_reviews WHERE moderation_status = 'PENDING'`,
+                    [],
+                    (reviewErr, reviews) => {
+                      if (reviewErr) return res.status(500).json({ error: 'Unable to load review totals.' });
+                      db.all(
+                        `SELECT 'purchase:' || p.tx_hash AS event_id, 'ACCOUNT_PURCHASE' AS event_type,
+                                p.created_at AS occurred_at, p.wallet_address, COALESCE(u.username, '') AS username,
+                                p.tx_hash, p.chain_id, COALESCE(p.amount_usdt, 0) AS amount_usdt,
+                                p.quantity, COALESCE(pl.name, 'Trading account') AS plan_name,
+                                a.id AS account_id, NULL AS status, NULL AS withdrawal_type
+                         FROM purchases p
+                         LEFT JOIN users u ON LOWER(u.wallet_address) = LOWER(p.wallet_address)
+                         LEFT JOIN accounts a ON a.id = p.account_id
+                         LEFT JOIN plans pl ON pl.id = a.plan_id
+                         WHERE p.chain_id > 0
+                         UNION ALL
+                         SELECT 'withdrawal:' || w.id || ':' || w.status AS event_id,
+                                CASE w.status WHEN 'PAID' THEN 'PERFORMANCE_PAYOUT_PAID'
+                                  WHEN 'REJECTED' THEN 'PERFORMANCE_PAYOUT_REJECTED'
+                                  ELSE 'PERFORMANCE_PAYOUT_REQUESTED' END AS event_type,
+                                CASE WHEN w.status = 'PAID' THEN COALESCE(w.paid_at, w.created_at) ELSE w.created_at END AS occurred_at,
+                                w.wallet_address, COALESCE(u.username, '') AS username,
+                                NULL AS tx_hash, NULL AS chain_id, COALESCE(w.user_amount, ROUND(w.amount * 0.9, 2)) AS amount_usdt,
+                                1 AS quantity, COALESCE(pl.name, w.plan_name, 'Trading account') AS plan_name,
+                                w.account_id, w.status, 'ACCOUNT' AS withdrawal_type
+                         FROM withdrawals w
+                         LEFT JOIN users u ON LOWER(u.wallet_address) = LOWER(w.wallet_address)
+                         LEFT JOIN accounts a ON a.id = w.account_id
+                         LEFT JOIN plans pl ON pl.id = a.plan_id
+                         UNION ALL
+                         SELECT 'referral-withdrawal:' || rw.id || ':' || rw.status AS event_id,
+                                CASE rw.status WHEN 'PAID' THEN 'REFERRAL_PAYOUT_PAID'
+                                  WHEN 'REJECTED' THEN 'REFERRAL_PAYOUT_REJECTED'
+                                  ELSE 'REFERRAL_PAYOUT_REQUESTED' END AS event_type,
+                                CASE WHEN rw.status = 'PAID' THEN COALESCE(rw.paid_at, rw.created_at) ELSE rw.created_at END AS occurred_at,
+                                rw.wallet_address, COALESCE(u.username, '') AS username,
+                                NULL AS tx_hash, NULL AS chain_id, rw.amount AS amount_usdt,
+                                1 AS quantity, 'Referral commission' AS plan_name,
+                                NULL AS account_id, rw.status, 'COMMISSION' AS withdrawal_type
+                         FROM referral_withdrawals rw
+                         LEFT JOIN users u ON LOWER(u.wallet_address) = LOWER(rw.wallet_address)
+                         UNION ALL
+                         SELECT 'ticket:' || t.id || ':created' AS event_id, 'TICKET_OPENED' AS event_type,
+                                t.created_at AS occurred_at, t.wallet_address, COALESCE(u.username, '') AS username,
+                                NULL AS tx_hash, NULL AS chain_id, 0 AS amount_usdt, 1 AS quantity,
+                                t.subject AS plan_name, t.account_id, t.status, NULL AS withdrawal_type
+                         FROM support_tickets t
+                         LEFT JOIN users u ON LOWER(u.wallet_address) = LOWER(t.wallet_address)
+                         UNION ALL
+                         SELECT 'review:' || r.account_id || ':' || r.updated_at AS event_id,
+                                'REVIEW_PENDING' AS event_type, r.updated_at AS occurred_at,
+                                r.wallet_address, r.username, NULL AS tx_hash, NULL AS chain_id,
+                                0 AS amount_usdt, 1 AS quantity, 'Review awaiting moderation' AS plan_name,
+                                r.account_id, r.moderation_status AS status, NULL AS withdrawal_type
+                         FROM user_reviews r WHERE r.moderation_status = 'PENDING'
+                         ORDER BY occurred_at DESC LIMIT 50`,
+                        [],
+                        (eventErr, events) => {
+                          if (eventErr) return res.status(500).json({ error: 'Unable to load recent operations activity.' });
+                          res.json({
+                            metrics: {
+                              active_wallets: Number(wallets?.active_wallets || 0),
+                              all_time_wallets: Number(wallets?.all_time_wallets || 0),
+                              verified_purchases: Number(sales?.verified_purchases || 0),
+                              sales_usdt: Number(sales?.sales_usdt || 0),
+                              unpriced_legacy_purchases: Number(sales?.unpriced_legacy_purchases || 0),
+                              withdrawal_requests: Number(withdrawals?.total_requests || 0),
+                              paid_withdrawals: Number(withdrawals?.paid_count || 0),
+                              pending_withdrawals: Number(withdrawals?.pending_count || 0),
+                              pending_withdrawal_usdt: Number(withdrawals?.pending_usdt || 0),
+                              paid_withdrawal_usdt: Number(withdrawals?.paid_usdt || 0),
+                              pending_tickets: Number(tickets?.pending_tickets || 0),
+                              pending_reviews: Number(reviews?.pending_reviews || 0)
+                            },
+                            events: events || []
+                          });
+                        }
+                      );
+                    }
+                  );
+                }
+              );
+            }
+          );
+        }
+      );
+    }
+  );
+});
+
+app.get('/api/public/activity', publicActivityLimiter, (req, res) => {
+  res.set('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+  db.all(
+    `SELECT event_type, occurred_at, plan_name
+     FROM (
+       SELECT 'ACCOUNT_PURCHASE' AS event_type, p.created_at AS occurred_at,
+              COALESCE(pl.name, 'Trading account') AS plan_name
+       FROM purchases p
+       LEFT JOIN accounts a ON a.id = p.account_id
+       LEFT JOIN plans pl ON pl.id = a.plan_id
+       WHERE p.chain_id > 0 AND COALESCE(p.amount_usdt, 0) > 0
+       UNION ALL
+       SELECT 'PERFORMANCE_PAYOUT_PAID' AS event_type, COALESCE(w.paid_at, w.created_at) AS occurred_at,
+              'Trading performance payout' AS plan_name
+       FROM withdrawals w WHERE w.status = 'PAID'
+       UNION ALL
+       SELECT 'REFERRAL_PAYOUT_PAID' AS event_type, COALESCE(rw.paid_at, rw.created_at) AS occurred_at,
+              'Referral bonus payout' AS plan_name
+       FROM referral_withdrawals rw WHERE rw.status = 'PAID'
+     )
+     ORDER BY occurred_at DESC LIMIT 12`,
+    [],
+    (err, events) => {
+      if (err) return res.status(500).json({ error: 'Unable to load recent platform activity.' });
+      res.json({ events: events || [] });
+    }
+  );
 });
 
 app.get('/api/leaderboard', (req, res) => {
@@ -2593,11 +2823,11 @@ app.post('/api/user/reviews', sensitiveLimiter, requireWalletSession, (req, res)
                 if (beginErr) return res.status(500).json({ error: 'Unable to start review submission.' });
                 const rollback = (status, error) => db.run('ROLLBACK', () => res.status(status).json({ error }));
                 db.run(
-                  `INSERT INTO user_reviews (account_id, wallet_address, username, rating, comment, published)
-                   VALUES (?, ?, ?, ?, ?, 0)
+                  `INSERT INTO user_reviews (account_id, wallet_address, username, rating, comment, published, moderation_status)
+                   VALUES (?, ?, ?, ?, ?, 0, 'PENDING')
                    ON CONFLICT(account_id) DO UPDATE SET username = excluded.username,
                      rating = excluded.rating, comment = excluded.comment, published = 0,
-                     updated_at = CURRENT_TIMESTAMP
+                     moderation_status = 'PENDING', updated_at = CURRENT_TIMESTAMP
                    WHERE LOWER(user_reviews.wallet_address) = LOWER(excluded.wallet_address)`,
                   [accountId, req.walletAddress, user.username, rating, comment],
                   function(saveErr) {
@@ -2672,7 +2902,7 @@ app.get('/api/reviews', (req, res) => {
   );
 });
 
-app.post('/api/admin/tickets', sensitiveLimiter, requireTradeSignature, requireAdminWallet, (req, res) => {
+function loadAdminTickets(req, res) {
   db.all(
     `SELECT t.*, u.username, a.plan_id, p.name AS plan_name
      FROM support_tickets t
@@ -2690,6 +2920,135 @@ app.post('/api/admin/tickets', sensitiveLimiter, requireTradeSignature, requireA
       });
     }
   );
+}
+
+app.get('/api/admin/tickets', requireWalletSession, requireAdminSession, loadAdminTickets);
+app.post('/api/admin/tickets', sensitiveLimiter, requireTradeSignature, requireAdminWallet, loadAdminTickets);
+
+app.get('/api/staff/tickets', requireWalletSession, requireSupportStaff, (req, res) => {
+  db.all(
+    `SELECT t.*, u.username, a.plan_id, p.name AS plan_name
+     FROM support_tickets t
+     LEFT JOIN users u ON LOWER(u.wallet_address) = LOWER(t.wallet_address)
+     LEFT JOIN accounts a ON a.id = t.account_id
+     LEFT JOIN plans p ON p.id = a.plan_id
+     WHERE t.status != 'CLOSED'
+     ORDER BY CASE t.status WHEN 'OPEN' THEN 0 ELSE 1 END, t.updated_at DESC LIMIT 250`,
+    [],
+    (err, tickets) => {
+      if (err) return res.status(500).json({ error: 'Unable to load support tickets.' });
+      attachTicketMessages(tickets || [], (messagesErr, results) => {
+        if (messagesErr) return res.status(500).json({ error: 'Unable to load ticket replies.' });
+        res.json({ tickets: results });
+      });
+    }
+  );
+});
+
+app.post('/api/staff/tickets/action', sensitiveLimiter, requireWalletSession, requireSupportStaff, (req, res) => {
+  const ticketId = typeof req.body?.ticket_id === 'string' ? req.body.ticket_id : '';
+  const action = req.body?.action;
+  const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+  if (!ticketId || !['REPLY', 'CLOSE'].includes(action) ||
+      (action === 'REPLY' && (message.length < 1 || message.length > 5000)) ||
+      (action === 'CLOSE' && message.length > 5000)) {
+    return res.status(400).json({ error: 'A ticket, valid action, and reply within 5,000 characters are required.' });
+  }
+  db.get('SELECT id, status FROM support_tickets WHERE id = ?', [ticketId], (err, ticket) => {
+    if (err) return res.status(500).json({ error: 'Unable to load support ticket.' });
+    if (!ticket) return res.status(404).json({ error: 'Support ticket not found.' });
+    if (ticket.status === 'CLOSED') return res.status(409).json({ error: 'This ticket is already closed.' });
+    db.serialize(() => {
+      db.run('BEGIN IMMEDIATE', beginErr => {
+        if (beginErr) return res.status(500).json({ error: 'Unable to start ticket update.' });
+        const rollback = (status, error) => db.run('ROLLBACK', () => res.status(status).json({ error }));
+        const updateStatus = () => db.run(
+          `UPDATE support_tickets SET status = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ? AND status != 'CLOSED'`,
+          [action === 'CLOSE' ? 'CLOSED' : 'NEEDS_INFO', ticket.id],
+          function(updateErr) {
+            if (updateErr) return rollback(500, 'Unable to update ticket status.');
+            if (this.changes !== 1) return rollback(409, 'This ticket is already closed.');
+            db.run('COMMIT', commitErr => {
+              if (commitErr) return rollback(500, 'Unable to commit ticket update.');
+              res.json({ success: true, status: action === 'CLOSE' ? 'CLOSED' : 'NEEDS_INFO' });
+            });
+          }
+        );
+        if (action === 'CLOSE') return updateStatus();
+        db.run(
+          `INSERT INTO support_ticket_messages
+           (ticket_id, author_role, author_name, body, author_wallet)
+           VALUES (?, 'ADMIN', 'Support Staff', ?, ?)`,
+          [ticket.id, message, req.walletAddress],
+          insertErr => insertErr
+            ? rollback(500, 'Unable to save support reply.')
+            : updateStatus()
+        );
+      });
+    });
+  });
+});
+
+app.get('/api/admin/support-staff', requireWalletSession, requireAdminSession, (req, res) => {
+  db.all(
+    `SELECT wallet_address, role, created_by, created_at, updated_by, updated_at
+     FROM support_staff WHERE active = 1 ORDER BY created_at DESC`,
+    [],
+    (err, staff) => {
+      if (err) return res.status(500).json({ error: 'Unable to load support staff.' });
+      res.json({ staff: staff || [] });
+    }
+  );
+});
+
+app.post('/api/admin/support-staff/action', sensitiveLimiter, requireTradeSignature, requireAdminWallet, (req, res) => {
+  const wallet = typeof req.body?.staff_wallet === 'string' ? req.body.staff_wallet.trim() : '';
+  const action = req.body?.action;
+  if (!ethers.isAddress(wallet) || !['ADD', 'REMOVE'].includes(action) ||
+      (action === 'ADD' && req.body?.role !== 'SUPPORT')) {
+    return res.status(400).json({ error: 'A valid wallet and the Support role are required.' });
+  }
+  db.serialize(() => {
+    db.run('BEGIN IMMEDIATE', beginErr => {
+      if (beginErr) return res.status(500).json({ error: 'Unable to start support staff update.' });
+      const rollback = (status, error) => db.run('ROLLBACK', () => res.status(status).json({ error }));
+      const persistAudit = () => db.run(
+        'INSERT INTO support_staff_events (wallet_address, admin_wallet, action) VALUES (?, ?, ?)',
+        [wallet.toLowerCase(), req.walletAddress, action],
+        auditErr => {
+          if (auditErr) return rollback(500, 'Unable to record support staff audit event.');
+          db.run('COMMIT', commitErr => {
+            if (commitErr) return rollback(500, 'Unable to finish support staff update.');
+            res.json({ success: true, active: action === 'ADD' });
+          });
+        }
+      );
+      if (action === 'ADD') {
+        return db.run(
+          `INSERT INTO support_staff (wallet_address, role, active, created_by, created_at, updated_by, updated_at)
+           VALUES (?, 'SUPPORT', 1, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(wallet_address) DO UPDATE SET role = 'SUPPORT', active = 1,
+             updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP`,
+          [wallet.toLowerCase(), req.walletAddress, req.walletAddress],
+          function(saveErr) {
+            if (saveErr) return rollback(500, 'Unable to add support staff wallet.');
+            persistAudit();
+          }
+        );
+      }
+      db.run(
+        `UPDATE support_staff SET active = 0, updated_by = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE LOWER(wallet_address) = LOWER(?) AND active = 1`,
+        [req.walletAddress, wallet],
+        function(removeErr) {
+          if (removeErr) return rollback(500, 'Unable to remove support staff wallet.');
+          if (this.changes !== 1) return rollback(404, 'Active support staff wallet not found.');
+          persistAudit();
+        }
+      );
+    });
+  });
 });
 
 app.post('/api/admin/tickets/action', sensitiveLimiter, requireTradeSignature, requireAdminWallet, (req, res) => {
@@ -2735,7 +3094,7 @@ app.post('/api/admin/tickets/action', sensitiveLimiter, requireTradeSignature, r
   });
 });
 
-app.post('/api/admin/reviews', sensitiveLimiter, requireTradeSignature, requireAdminWallet, (req, res) => {
+function loadAdminReviews(req, res) {
   db.all(
     `SELECT r.account_id, r.wallet_address, r.username, r.rating, r.comment, r.published, r.created_at, r.updated_at,
             p.name AS plan_name
@@ -2749,6 +3108,61 @@ app.post('/api/admin/reviews', sensitiveLimiter, requireTradeSignature, requireA
       res.json({ reviews: reviews || [] });
     }
   );
+}
+
+app.get('/api/admin/reviews', requireWalletSession, requireAdminSession, loadAdminReviews);
+app.post('/api/admin/reviews', sensitiveLimiter, requireTradeSignature, requireAdminWallet, loadAdminReviews);
+
+app.get('/api/staff/reviews', requireWalletSession, requireSupportStaff, (req, res) => {
+  db.all(
+    `SELECT r.account_id, r.wallet_address, r.username, r.rating, r.comment, r.created_at, r.updated_at,
+            p.name AS plan_name
+     FROM user_reviews r
+     LEFT JOIN accounts a ON a.id = r.account_id
+     LEFT JOIN plans p ON p.id = a.plan_id
+     WHERE r.moderation_status = 'PENDING'
+     ORDER BY r.updated_at ASC LIMIT 300`,
+    [],
+    (err, reviews) => {
+      if (err) return res.status(500).json({ error: 'Unable to load pending reviews.' });
+      res.json({ reviews: reviews || [] });
+    }
+  );
+});
+
+app.post('/api/staff/reviews/action', sensitiveLimiter, requireWalletSession, requireSupportStaff, (req, res) => {
+  const accountId = typeof req.body?.review_account_id === 'string' ? req.body.review_account_id.trim() : '';
+  const action = req.body?.action;
+  if (!accountId || !['APPROVE', 'REJECT'].includes(action)) {
+    return res.status(400).json({ error: 'A review and approve or reject action are required.' });
+  }
+  const moderationStatus = action === 'APPROVE' ? 'APPROVED' : 'REJECTED';
+  db.serialize(() => {
+    db.run('BEGIN IMMEDIATE', beginErr => {
+      if (beginErr) return res.status(500).json({ error: 'Unable to start review moderation.' });
+      const rollback = (status, error) => db.run('ROLLBACK', () => res.status(status).json({ error }));
+      db.run(
+        `UPDATE user_reviews SET published = ?, moderation_status = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE account_id = ? AND moderation_status = 'PENDING'`,
+        [action === 'APPROVE' ? 1 : 0, moderationStatus, accountId],
+        function(updateErr) {
+          if (updateErr) return rollback(500, 'Unable to update review moderation.');
+          if (this.changes !== 1) return rollback(404, 'Pending review not found.');
+          db.run(
+            'INSERT INTO review_moderation_actions (account_id, reviewer_wallet, action) VALUES (?, ?, ?)',
+            [accountId, req.walletAddress, action === 'APPROVE' ? 'APPROVE' : 'REJECT'],
+            auditErr => {
+              if (auditErr) return rollback(500, 'Unable to record review moderation audit event.');
+              db.run('COMMIT', commitErr => {
+                if (commitErr) return rollback(500, 'Unable to finish review moderation.');
+                res.json({ success: true, moderation_status: moderationStatus });
+              });
+            }
+          );
+        }
+      );
+    });
+  });
 });
 
 app.post('/api/admin/reviews/action', sensitiveLimiter, requireTradeSignature, requireAdminWallet, (req, res) => {
@@ -2757,15 +3171,32 @@ app.post('/api/admin/reviews/action', sensitiveLimiter, requireTradeSignature, r
   if (typeof accountId !== 'string' || !accountId.trim() || !['PUBLISH', 'HIDE'].includes(action)) {
     return res.status(400).json({ error: 'A valid review account and publish or hide action are required.' });
   }
-  db.run(
-    'UPDATE user_reviews SET published = ?, updated_at = CURRENT_TIMESTAMP WHERE account_id = ?',
-    [action === 'PUBLISH' ? 1 : 0, accountId.trim()],
-    function(updateErr) {
-      if (updateErr) return res.status(500).json({ error: 'Unable to update review publication.' });
-      if (this.changes !== 1) return res.status(404).json({ error: 'Review not found.' });
-      res.json({ success: true, published: action === 'PUBLISH' });
-    }
-  );
+  const moderationStatus = action === 'PUBLISH' ? 'APPROVED' : 'HIDDEN';
+  db.serialize(() => {
+    db.run('BEGIN IMMEDIATE', beginErr => {
+      if (beginErr) return res.status(500).json({ error: 'Unable to start review moderation.' });
+      const rollback = error => db.run('ROLLBACK', () => res.status(500).json({ error }));
+      db.run(
+        'UPDATE user_reviews SET published = ?, moderation_status = ?, updated_at = CURRENT_TIMESTAMP WHERE account_id = ?',
+        [action === 'PUBLISH' ? 1 : 0, moderationStatus, accountId.trim()],
+        function(updateErr) {
+          if (updateErr) return rollback('Unable to update review publication.');
+          if (this.changes !== 1) return db.run('ROLLBACK', () => res.status(404).json({ error: 'Review not found.' }));
+          db.run(
+            'INSERT INTO review_moderation_actions (account_id, reviewer_wallet, action) VALUES (?, ?, ?)',
+            [accountId.trim(), req.walletAddress, action === 'PUBLISH' ? 'APPROVE' : 'HIDE'],
+            auditErr => {
+              if (auditErr) return rollback('Unable to record review moderation audit event.');
+              db.run('COMMIT', commitErr => {
+                if (commitErr) return rollback('Unable to finish review moderation.');
+                res.json({ success: true, published: action === 'PUBLISH', moderation_status: moderationStatus });
+              });
+            }
+          );
+        }
+      );
+    });
+  });
 });
 
 app.post('/api/admin/referrals/search', sensitiveLimiter, requireTradeSignature, requireAdminWallet, (req, res) => {
@@ -3114,7 +3545,7 @@ app.get('/api/user/referrals', requireWalletSession, (req, res) => {
 
 app.post('/api/referrals/withdraw', sensitiveLimiter, requireTradeSignature, (req, res) => {
   const { wallet_address, amount } = req.body;
-  const amountValue = Number(amount);
+  const amountValue = Math.round(Number(amount) * 100) / 100;
   if (!Number.isFinite(amountValue) || amountValue <= 0) {
     return res.status(400).json({ error: "Invalid withdrawal parameters." });
   }
@@ -3141,16 +3572,56 @@ app.post('/api/referrals/withdraw', sensitiveLimiter, requireTradeSignature, (re
               }
 
               const withdrawalId = `refw_${crypto.randomBytes(7).toString('hex')}`;
-              db.run(
-                `INSERT INTO referral_withdrawals (id, wallet_address, amount, status)
-                 VALUES (?, ?, ?, 'PENDING')`,
-                [withdrawalId, wallet_address, amountValue],
-                (insertErr) => {
-                  if (insertErr) return rollback(500, 'Unable to record commission withdrawal.');
-                  db.run('COMMIT', (commitErr) => {
-                    if (commitErr) return rollback(500, 'Unable to commit commission withdrawal.');
-                    res.json({ success: true, message: 'Commission withdrawal requested successfully.' });
-                  });
+              db.all(
+                `SELECT id, commission_earned FROM referrals
+                 WHERE LOWER(referrer_wallet) = LOWER(?) ORDER BY created_at, id`,
+                [wallet_address],
+                (referralErr, referrals) => {
+                  if (referralErr) return rollback(500, 'Unable to allocate commission transactions.');
+                  let previouslyConsumedCents = Math.max(0, Math.round(Number(withdrawnRow.total_withdrawn) * 100));
+                  let remainingCents = Math.round(amountValue * 100);
+                  const allocations = [];
+                  for (const referral of referrals || []) {
+                    const earnedCents = Math.max(0, Math.round(Number(referral.commission_earned || 0) * 100));
+                    const consumedCents = Math.min(previouslyConsumedCents, earnedCents);
+                    previouslyConsumedCents -= consumedCents;
+                    const availableCents = earnedCents - consumedCents;
+                    const allocatedCents = Math.min(availableCents, remainingCents);
+                    if (allocatedCents > 0) {
+                      allocations.push({ referralId: referral.id, amount: allocatedCents / 100 });
+                      remainingCents -= allocatedCents;
+                    }
+                    if (remainingCents === 0) break;
+                  }
+                  if (remainingCents > 0) {
+                    return rollback(409, 'Commission records no longer match the available withdrawal balance. Refresh and retry.');
+                  }
+                  db.run(
+                    `INSERT INTO referral_withdrawals (id, wallet_address, amount, status)
+                     VALUES (?, ?, ?, 'PENDING')`,
+                    [withdrawalId, wallet_address, amountValue],
+                    insertErr => {
+                      if (insertErr) return rollback(500, 'Unable to record commission withdrawal.');
+                      const saveAllocation = index => {
+                        if (index >= allocations.length) {
+                          return db.run('COMMIT', commitErr => {
+                            if (commitErr) return rollback(500, 'Unable to commit commission withdrawal.');
+                            res.json({ success: true, message: 'Commission withdrawal requested successfully.' });
+                          });
+                        }
+                        const allocation = allocations[index];
+                        db.run(
+                          `INSERT INTO referral_withdrawal_allocations (withdrawal_id, referral_id, amount)
+                           VALUES (?, ?, ?)`,
+                          [withdrawalId, allocation.referralId, allocation.amount],
+                          allocationErr => allocationErr
+                            ? rollback(500, 'Unable to record commission transaction allocation.')
+                            : saveAllocation(index + 1)
+                        );
+                      };
+                      saveAllocation(0);
+                    }
+                  );
                 }
               );
             }
@@ -3549,9 +4020,9 @@ app.post('/api/accounts/purchase', sensitiveLimiter, requireWalletSession, requi
                     return rollback(403, `This user account is suspended by an administrator${user.admin_suspend_reason ? `: ${user.admin_suspend_reason}` : '.'}`);
                   }
                   db.run(
-                    `INSERT INTO purchases (tx_hash, chain_id, wallet_address, account_id, quantity)
-                     VALUES (?, ?, ?, ?, ?)`,
-                    [normalizedTxHash, purchaseChainId, wallet_address, accountId, quantity],
+                    `INSERT INTO purchases (tx_hash, chain_id, wallet_address, account_id, quantity, amount_usdt)
+                     VALUES (?, ?, ?, ?, ?, ?)`,
+                    [normalizedTxHash, purchaseChainId, wallet_address, accountId, quantity, totalPrice],
                     (purchaseErr) => {
                       if (purchaseErr) return rollback(409, 'This transaction or discount code has already been used.');
                   const provisionAccounts = (index, onComplete) => {
@@ -3598,15 +4069,17 @@ app.post('/api/accounts/purchase', sensitiveLimiter, requireWalletSession, requi
                             if (attributionErr) return rollback(500, 'Unable to save referral attribution.');
                             db.run(
                               `INSERT INTO referrals
-                               (referrer_wallet, referee_wallet, plan_id, paid_amount, commission_earned, commission_pct, level)
-                               VALUES (?, ?, ?, ?, ?, ?, 1)`,
+                               (referrer_wallet, referee_wallet, plan_id, paid_amount, commission_earned, commission_pct, level, purchase_tx_hash, purchase_chain_id)
+                                VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)`,
                               [
                                 referrerWallet,
                                 wallet_address,
                                 Number(plan_id),
                                 totalPrice,
                                 totalPrice * referralCommissionPct / 100,
-                                referralCommissionPct
+                                referralCommissionPct,
+                                normalizedTxHash,
+                                purchaseChainId
                               ],
                               referralErr => {
                                 if (referralErr) return rollback(500, 'Unable to record the direct referral commission.');
@@ -3624,15 +4097,17 @@ app.post('/api/accounts/purchase', sensitiveLimiter, requireWalletSession, requi
                                     }
                                     db.run(
                                       `INSERT INTO referrals
-                                       (referrer_wallet, referee_wallet, plan_id, paid_amount, commission_earned, commission_pct, level)
-                                       VALUES (?, ?, ?, ?, ?, ?, 2)`,
+                                       (referrer_wallet, referee_wallet, plan_id, paid_amount, commission_earned, commission_pct, level, purchase_tx_hash, purchase_chain_id)
+                                       VALUES (?, ?, ?, ?, ?, ?, 2, ?, ?)`,
                                       [
                                         secondLevelWallet,
                                         wallet_address,
                                         Number(plan_id),
                                         totalPrice,
                                         totalPrice * secondLevelCommissionPct / 100,
-                                        secondLevelCommissionPct
+                                        secondLevelCommissionPct,
+                                        normalizedTxHash,
+                                        purchaseChainId
                                       ],
                                       levelTwoErr => levelTwoErr
                                         ? rollback(500, 'Unable to record the level-2 referral commission.')
@@ -3771,23 +4246,26 @@ app.post('/api/withdrawals/request', sensitiveLimiter, requireTradeSignature, re
     });
 });
 
-app.post('/api/admin/withdrawals', sensitiveLimiter, requireTradeSignature, requireAdminWallet, (req, res) => {
+function loadAdminWithdrawals(req, res) {
   db.all(
     `SELECT w.id, w.account_id, w.wallet_address, w.amount, w.status, w.created_at, w.funds_deducted,
      'ACCOUNT' as type, p.name as plan_name, w.user_ip, a.current_balance AS account_balance,
      a.initial_balance, a.high_water_mark, a.admin_frozen, a.admin_freeze_reason,
+     COALESCE(u.username, '') AS username,
      p.max_drawdown_pct,
      COALESCE(w.user_amount, ROUND(w.amount * 0.9, 2)) AS user_amount,
      COALESCE(w.admin_share, ROUND(w.amount - ROUND(w.amount * 0.9, 2), 2)) AS admin_share
      FROM withdrawals w 
      JOIN accounts a ON w.account_id = a.id 
-     JOIN plans p ON a.plan_id = p.id 
+     JOIN plans p ON a.plan_id = p.id
+     LEFT JOIN users u ON LOWER(u.wallet_address) = LOWER(w.wallet_address)
      UNION ALL
      SELECT id as id, NULL as account_id, wallet_address, amount, status, created_at, NULL AS funds_deducted,
-      'COMMISSION' as type, 'Referral Commission' as plan_name, NULL as account_balance,
+      'COMMISSION' as type, 'Referral Commission' as plan_name, NULL AS user_ip, NULL as account_balance,
       NULL AS initial_balance, NULL AS high_water_mark, NULL AS admin_frozen,
-      NULL AS admin_freeze_reason, NULL AS max_drawdown_pct,
-      amount AS user_amount, 0 AS admin_share, NULL as user_ip
+      NULL AS admin_freeze_reason,
+      COALESCE((SELECT username FROM users WHERE LOWER(wallet_address) = LOWER(referral_withdrawals.wallet_address)), '') AS username,
+      NULL AS max_drawdown_pct, amount AS user_amount, 0 AS admin_share
      FROM referral_withdrawals
      ORDER BY created_at DESC`,
     [],
@@ -3795,32 +4273,196 @@ app.post('/api/admin/withdrawals', sensitiveLimiter, requireTradeSignature, requ
       if (err) return res.status(500).json({ error: 'Unable to load withdrawal queue.' });
       const withdrawals = rows || [];
       const accountIds = [...new Set(withdrawals.filter(row => row.type === 'ACCOUNT').map(row => row.account_id))];
-      const tradesByAccount = new Map();
-      const loadNext = (index) => {
-        if (index >= accountIds.length) {
-          return res.json({
-            withdrawals: withdrawals.map(row => ({
-              ...row,
-              trades: row.type === 'ACCOUNT' ? (tradesByAccount.get(row.account_id) || []) : []
-            }))
-          });
+      db.all(
+        `SELECT li.wallet_address, li.ip_address, MIN(li.created_at) AS first_seen, MAX(li.created_at) AS last_seen,
+                COUNT(*) AS login_count
+         FROM user_login_ip_events li
+         WHERE li.created_at >= datetime('now', '-180 days')
+           AND LOWER(li.wallet_address) IN (
+             SELECT LOWER(wallet_address) FROM withdrawals WHERE wallet_address IS NOT NULL
+             UNION SELECT LOWER(wallet_address) FROM referral_withdrawals WHERE wallet_address IS NOT NULL
+           )
+         GROUP BY LOWER(li.wallet_address), li.ip_address`,
+        [],
+        (ipErr, loginRows) => {
+          if (ipErr) return res.status(500).json({ error: 'Unable to load payout login IP history.' });
+          db.all(
+            `SELECT a.id, a.wallet_address, a.plan_id, p.name AS plan_name, a.status, a.initial_balance,
+                    a.current_balance, a.current_equity, a.created_at, a.admin_frozen
+             FROM accounts a LEFT JOIN plans p ON p.id = a.plan_id
+             WHERE LOWER(a.wallet_address) IN (
+               SELECT LOWER(wallet_address) FROM withdrawals WHERE wallet_address IS NOT NULL
+               UNION SELECT LOWER(wallet_address) FROM referral_withdrawals WHERE wallet_address IS NOT NULL
+             )
+             ORDER BY a.created_at DESC`,
+            [],
+            (accountErr, accountRows) => {
+              if (accountErr) return res.status(500).json({ error: 'Unable to load payout account history.' });
+              db.all(
+                `SELECT t.id, t.account_id, t.symbol, t.side, t.entry_price, t.size_usd, t.pnl,
+                        t.status, t.created_at, t.closed_at, t.order_type, t.trigger_price
+                 FROM trades t
+                 WHERE t.account_id IN (
+                   SELECT a.id FROM accounts a
+                   WHERE LOWER(a.wallet_address) IN (
+                     SELECT LOWER(wallet_address) FROM withdrawals WHERE wallet_address IS NOT NULL
+                     UNION SELECT LOWER(wallet_address) FROM referral_withdrawals WHERE wallet_address IS NOT NULL
+                   )
+                 )
+                 ORDER BY t.created_at DESC`,
+                [],
+                (tradeErr, tradeRows) => {
+                  if (tradeErr) return res.status(500).json({ error: 'Unable to load payout trade history.' });
+                  db.all(
+                    `WITH withdrawal_wallets AS (
+                       SELECT LOWER(wallet_address) AS wallet_address FROM withdrawals WHERE wallet_address IS NOT NULL
+                       UNION SELECT LOWER(wallet_address) FROM referral_withdrawals WHERE wallet_address IS NOT NULL
+                     ),
+                     target_ips AS (
+                       SELECT DISTINCT ip_address FROM user_login_ip_events
+                       WHERE created_at >= datetime('now', '-180 days')
+                         AND LOWER(wallet_address) IN (SELECT wallet_address FROM withdrawal_wallets)
+                     )
+                     SELECT DISTINCT LOWER(li.wallet_address) AS wallet_address, li.ip_address,
+                            COALESCE(u.username, '') AS username, a.id AS account_id,
+                            p.name AS plan_name, a.status AS account_status
+                     FROM user_login_ip_events li
+                     JOIN target_ips ti ON ti.ip_address = li.ip_address
+                     LEFT JOIN users u ON LOWER(u.wallet_address) = LOWER(li.wallet_address)
+                     LEFT JOIN accounts a ON LOWER(a.wallet_address) = LOWER(li.wallet_address)
+                     LEFT JOIN plans p ON p.id = a.plan_id
+                     WHERE li.created_at >= datetime('now', '-180 days')
+                     ORDER BY LOWER(li.wallet_address), li.ip_address, a.created_at DESC`,
+                    [],
+                    (relatedErr, relatedRows) => {
+                      if (relatedErr) return res.status(500).json({ error: 'Unable to load wallets sharing payout login IPs.' });
+                      db.all(
+                        `SELECT r.referrer_wallet, r.referee_wallet, r.plan_id, r.paid_amount,
+                                r.commission_earned, r.commission_pct, r.level, r.created_at,
+                                r.purchase_tx_hash, r.purchase_chain_id, p.name AS plan_name,
+                                purchase.account_id AS purchase_account_id,
+                                purchase.amount_usdt AS purchase_amount_usdt,
+                                purchase.quantity AS purchase_quantity
+                         FROM referrals r LEFT JOIN plans p ON p.id = r.plan_id
+                         LEFT JOIN purchases purchase ON purchase.tx_hash = r.purchase_tx_hash
+                         WHERE LOWER(r.referrer_wallet) IN (
+                           SELECT LOWER(wallet_address) FROM referral_withdrawals
+                         )
+                         ORDER BY r.created_at DESC`,
+                        [],
+                        (referralErr, referralRows) => {
+                          if (referralErr) return res.status(500).json({ error: 'Unable to load referral payout provenance.' });
+                          db.all(
+                            `SELECT allocation.withdrawal_id, allocation.amount AS allocated_amount,
+                                    r.referrer_wallet, r.referee_wallet, r.plan_id, r.paid_amount,
+                                    r.commission_earned, r.commission_pct, r.level, r.created_at,
+                                    r.purchase_tx_hash, r.purchase_chain_id, p.name AS plan_name,
+                                    purchase.account_id AS purchase_account_id,
+                                    purchase.amount_usdt AS purchase_amount_usdt,
+                                    purchase.quantity AS purchase_quantity
+                             FROM referral_withdrawal_allocations allocation
+                             JOIN referrals r ON r.id = allocation.referral_id
+                             LEFT JOIN plans p ON p.id = r.plan_id
+                             LEFT JOIN purchases purchase ON purchase.tx_hash = r.purchase_tx_hash
+                             ORDER BY allocation.withdrawal_id, r.created_at, r.id`,
+                            [],
+                            (allocationErr, allocationRows) => {
+                              if (allocationErr) return res.status(500).json({ error: 'Unable to load referral payout allocations.' });
+                              const keyWallet = value => String(value || '').toLowerCase();
+                              const loginIps = new Map();
+                              for (const row of loginRows || []) {
+                                const key = keyWallet(row.wallet_address);
+                                loginIps.set(key, [...(loginIps.get(key) || []), row]);
+                              }
+                              const accountsByWallet = new Map();
+                              const accountsById = new Map();
+                              for (const row of accountRows || []) {
+                                const key = keyWallet(row.wallet_address);
+                                accountsByWallet.set(key, [...(accountsByWallet.get(key) || []), { ...row, trades: [] }]);
+                                accountsById.set(row.id, accountsByWallet.get(key)[accountsByWallet.get(key).length - 1]);
+                              }
+                              for (const trade of tradeRows || []) {
+                                const account = accountsById.get(trade.account_id);
+                                if (account) account.trades.push(trade);
+                              }
+                              const relatedByTarget = new Map();
+                              for (const row of relatedRows || []) {
+                                const relatedKey = `${keyWallet(row.wallet_address)}|${row.ip_address}`;
+                                const related = relatedByTarget.get(relatedKey) || {
+                                  wallet_address: row.wallet_address,
+                                  username: row.username,
+                                  ip_address: row.ip_address,
+                                  accounts: []
+                                };
+                                if (row.account_id && !related.accounts.some(account => account.account_id === row.account_id)) {
+                                  related.accounts.push({
+                                    account_id: row.account_id,
+                                    plan_name: row.plan_name,
+                                    status: row.account_status
+                                  });
+                                }
+                                relatedByTarget.set(relatedKey, related);
+                              }
+                              const referralsByWallet = new Map();
+                              for (const row of referralRows || []) {
+                                const key = keyWallet(row.referrer_wallet);
+                                referralsByWallet.set(key, [...(referralsByWallet.get(key) || []), row]);
+                              }
+                              const referralsByWithdrawal = new Map();
+                              for (const row of allocationRows || []) {
+                                referralsByWithdrawal.set(
+                                  row.withdrawal_id,
+                                  [...(referralsByWithdrawal.get(row.withdrawal_id) || []), row]
+                                );
+                              }
+                              const relatedWalletsByIp = new Map();
+                              for (const related of relatedByTarget.values()) {
+                                relatedWalletsByIp.set(
+                                  related.ip_address,
+                                  [...(relatedWalletsByIp.get(related.ip_address) || []), related]
+                                );
+                              }
+                              res.json({
+                                withdrawals: withdrawals.map(row => {
+                                  const key = keyWallet(row.wallet_address);
+                                  const ips = loginIps.get(key) || [];
+                                  return {
+                                    ...row,
+                                    trades: row.type === 'ACCOUNT'
+                                      ? (accountsById.get(row.account_id)?.trades || [])
+                                      : [],
+                                    login_ips: ips,
+                                    accounts: accountsByWallet.get(key) || [],
+                                    related_wallets: [...new Map(
+                                      ips.flatMap(ip => relatedWalletsByIp.get(ip.ip_address) || [])
+                                        .filter(related => keyWallet(related.wallet_address) !== key)
+                                        .map(related => [`${keyWallet(related.wallet_address)}|${related.ip_address}`, related])
+                                    ).values()],
+                                    referral_transactions: row.type === 'COMMISSION'
+                                      ? (referralsByWithdrawal.get(row.id) || referralsByWallet.get(key) || [])
+                                      : [],
+                                    referral_transactions_exact: row.type === 'COMMISSION' && referralsByWithdrawal.has(row.id)
+                                  };
+                                })
+                              });
+                            }
+                          );
+                        }
+                      );
+                    }
+                  );
+                }
+              );
+            }
+          );
         }
-        const accountId = accountIds[index];
-        db.all(
-          `SELECT id, symbol, side, entry_price, size_usd, pnl, status, created_at, closed_at
-           FROM trades WHERE account_id = ? ORDER BY created_at DESC`,
-          [accountId],
-          (tradeErr, trades) => {
-            if (tradeErr) return res.status(500).json({ error: 'Unable to load account trade review.' });
-            tradesByAccount.set(accountId, trades || []);
-            loadNext(index + 1);
-          }
-        );
-      };
-      loadNext(0);
+      );
     }
   );
-});
+}
+
+app.get('/api/admin/withdrawals', requireWalletSession, requireAdminSession, loadAdminWithdrawals);
+app.post('/api/admin/withdrawals', sensitiveLimiter, requireTradeSignature, requireAdminWallet, loadAdminWithdrawals);
 
 app.post('/api/admin/hedging-alerts', sensitiveLimiter, requireTradeSignature, requireAdminWallet, (req, res) => {
   db.all(

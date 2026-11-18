@@ -81,6 +81,7 @@ footer{border-top:1px solid rgba(173,127,255,.15);padding:35px 0 25px}.footer-to
 button,input[type="button"],input[type="submit"],input[type="reset"],.btn{background:transparent!important;background-image:none!important;border:1px solid rgba(180,190,200,.2)!important;color:#f8fafc!important;box-shadow:none!important;transform:none}
 button:hover:not(:disabled),input[type="button"]:hover,input[type="submit"]:hover,input[type="reset"]:hover,.btn:hover,button:focus-visible,input[type="button"]:focus-visible,input[type="submit"]:focus-visible,input[type="reset"]:focus-visible,.btn:focus-visible{background:transparent!important;border-color:rgba(200,210,220,.42)!important;box-shadow:none!important;color:#fff!important;outline:none;transform:none}
 button:disabled,input[type="button"]:disabled,input[type="submit"]:disabled,input[type="reset"]:disabled,.btn[aria-disabled="true"]{opacity:.5;cursor:not-allowed}
+.home-activity{padding-top:34px;padding-bottom:38px}.home-activity-list{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:0;padding:0;list-style:none}.home-activity-item,.home-activity-empty{padding:14px;border:1px solid rgba(173,127,255,.16);border-radius:12px;background:rgba(15,14,25,.72)}.home-activity-item strong{display:block;color:#e8e3f3;font-size:12px}.home-activity-item time{display:block;margin-top:5px;color:#9089a5;font-size:10px}.home-activity-empty{color:#9089a5;font-size:12px}@media(max-width:720px){.home-activity-list{grid-template-columns:1fr}}
 </style>
 </head>
 <body data-maintenance-page="home">
@@ -223,6 +224,15 @@ button:disabled,input[type="button"]:disabled,input[type="submit"]:disabled,inpu
     <ol id="home-lb-payouts" class="home-leaderboard-list"><li class="home-leaderboard-empty">Loading standings…</li></ol>
    </article>
   </div>
+ </div>
+</section>
+
+<section id="home-activity" class="home-activity" aria-labelledby="home-activity-title">
+ <div class="wrap">
+  <div class="section-head"><div><span class="eyebrow">Platform activity</span><h2 id="home-activity-title">Recent activity</h2><p>Recent account purchases and paid rewards, shared without personal account details.</p></div></div>
+  <ol id="home-activity-list" class="home-activity-list" aria-live="polite">
+   <li class="home-activity-empty">Loading recent activity…</li>
+  </ol>
  </div>
 </section>
 
@@ -446,6 +456,42 @@ async function loadHomeLeaderboardCategory(category){
  }
 }
 homeLeaderboardCategories.forEach(loadHomeLeaderboardCategory);
+async function loadHomeActivity(){
+ const host=document.getElementById("home-activity-list");
+ if(!host) return;
+ try{
+  const response=await fetch("/api/public/activity");
+  if(!response.ok) throw new Error(`Activity request failed (${response.status})`);
+  const data=await response.json();
+  const events=Array.isArray(data.events)?data.events:[];
+  host.replaceChildren();
+  if(!events.length){
+   const empty=document.createElement("li");
+   empty.className="home-activity-empty";
+   empty.textContent="No recent activity to show yet.";
+   host.append(empty);
+   return;
+  }
+  events.forEach(event=>{
+   const item=document.createElement("li");
+   item.className="home-activity-item";
+   const title=document.createElement("strong");
+   title.textContent=event.event_type==="ACCOUNT_PURCHASE"
+    ? `${event.plan_name || "Trading"} account purchased`
+    : event.event_type==="PERFORMANCE_PAYOUT_PAID"
+     ? "Trading performance payout paid"
+     : "Referral reward paid";
+   const date=document.createElement("time");
+   date.dateTime=String(event.occurred_at || "").replace(" ","T")+"Z";
+   const parsed=new Date(date.dateTime);
+   date.textContent=Number.isNaN(parsed.getTime())?"Recently":parsed.toLocaleString();
+   item.append(title,date);
+   host.append(item);
+  });
+ }catch(error){console.error("Unable to load public platform activity:",error);}
+}
+loadHomeActivity();
+setInterval(loadHomeActivity,60000);
 async function loadPublishedReviews(){
  try{
   const response=await fetch("/api/reviews");
