@@ -7,7 +7,9 @@ const appJs = fs.readFileSync('public/js/app.js', 'utf8');
 test('wallet sign-in reports the API endpoint when the server responds with HTML', () => {
   assert.match(appJs, /async function readApiJson\(response, endpoint\)/);
   assert.match(appJs, /The server returned an HTML page instead of API JSON/);
-  assert.match(appJs, /Check that this site is connected to the running Blastrr API server/);
+  assert.match(appJs, /response\.status === 502/);
+  assert.match(appJs, /The API server is unavailable; the hosting proxy could not reach the Blastrr backend/);
+  assert.match(appJs, /Check that this site routes \/api requests to the running Blastrr API server/);
   assert.match(appJs, /readApiJson\(challengeResponse, '\/api\/auth\/trade-challenge'\)/);
   assert.match(appJs, /readApiJson\(response, '\/api\/auth\/wallet-session'\)/);
 });

@@ -174,9 +174,12 @@ let connectedWallet = null;
             try {
                 return JSON.parse(body);
             } catch {
-                const detail = body.trimStart().startsWith('<')
-                    ? 'The server returned an HTML page instead of API JSON. Check that this site is connected to the running Blastrr API server and deploy the latest server code.'
-                    : 'The server returned an invalid API response.';
+                const isHtml = body.trimStart().startsWith('<');
+                const detail = isHtml && response.status === 502
+                    ? 'The API server is unavailable; the hosting proxy could not reach the Blastrr backend. Check the backend process and deployment logs.'
+                    : isHtml
+                        ? 'The server returned an HTML page instead of API JSON. Check that this site routes /api requests to the running Blastrr API server.'
+                        : 'The server returned an invalid API response.';
                 throw new Error(`${endpoint} failed (HTTP ${response.status}). ${detail}`);
             }
         }

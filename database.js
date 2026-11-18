@@ -237,6 +237,9 @@ function initTables() {
       pip_size REAL,
       sl REAL,
       tp REAL,
+      sl_tp_mode TEXT NOT NULL DEFAULT 'price',
+      sl_amount REAL,
+      tp_amount REAL,
       pnl REAL DEFAULT 0,
       status TEXT DEFAULT 'OPEN',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -501,7 +504,6 @@ function initTables() {
     db.run('CREATE INDEX IF NOT EXISTS idx_support_tickets_wallet_updated ON support_tickets(wallet_address, updated_at DESC)');
     db.run('CREATE INDEX IF NOT EXISTS idx_support_tickets_status_updated ON support_tickets(status, updated_at DESC)');
     db.run('CREATE INDEX IF NOT EXISTS idx_support_ticket_messages_ticket ON support_ticket_messages(ticket_id, created_at)');
-    db.run('CREATE INDEX IF NOT EXISTS idx_user_reviews_moderation_updated ON user_reviews(moderation_status, updated_at DESC)');
     db.run('CREATE INDEX IF NOT EXISTS idx_promo_codes_created_at ON promo_codes(created_at DESC)');
     db.run('CREATE INDEX IF NOT EXISTS idx_battlepass_claims_wallet ON battlepass_task_claims(wallet_address, created_at DESC)');
     db.run('CREATE INDEX IF NOT EXISTS idx_battlepass_events_wallet ON battlepass_events(wallet_address, created_at DESC)');
@@ -865,7 +867,10 @@ function initTables() {
         ['trigger_price', 'REAL'],
         ['market_type', "TEXT NOT NULL DEFAULT 'CRYPTO'"],
         ['lot_size', 'REAL'],
-        ['pip_size', 'REAL']
+        ['pip_size', 'REAL'],
+        ['sl_tp_mode', "TEXT NOT NULL DEFAULT 'price'"],
+        ['sl_amount', 'REAL'],
+        ['tp_amount', 'REAL']
       ].forEach(([name, type]) => {
         if (!columns.some(column => column.name === name)) {
           db.run(`ALTER TABLE trades ADD COLUMN ${name} ${type}`, alterErr => {
