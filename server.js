@@ -2199,13 +2199,23 @@ app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSes
     (walletErr, wallets) => {
       if (walletErr) return res.status(500).json({ error: 'Unable to load wallet activity totals.' });
       db.get(
-        `SELECT COUNT(*) AS verified_purchases,
-                COALESCE(SUM(amount_usdt), 0) AS sales_stablecoins_usd,
-                COALESCE(SUM(CASE WHEN UPPER(COALESCE(payment_asset, 'USDT')) = 'USDT'
-                                  THEN COALESCE(amount_usdt, 0) ELSE 0 END), 0) AS sales_usdt,
-                COALESCE(SUM(CASE WHEN UPPER(COALESCE(payment_asset, 'USDT')) = 'USDC'
-                                  THEN COALESCE(amount_usdt, 0) ELSE 0 END), 0) AS sales_usdc,
-                COALESCE(SUM(CASE WHEN amount_usdt IS NULL THEN 1 ELSE 0 END), 0) AS unpriced_legacy_purchases
+        `SELECT COUNT(CASE WHEN amount_usdt > 0
+                                AND UPPER(COALESCE(payment_asset, 'USDT')) IN ('USDT', 'USDC')
+                                AND substr(LOWER(tx_hash), 1, 5) NOT IN ('free_', 'pass_') THEN 1 END) AS verified_purchases,
+                COALESCE(SUM(CASE WHEN amount_usdt > 0
+                                  AND UPPER(COALESCE(payment_asset, 'USDT')) IN ('USDT', 'USDC')
+                                  AND substr(LOWER(tx_hash), 1, 5) NOT IN ('free_', 'pass_')
+                                  THEN amount_usdt ELSE 0 END), 0) AS sales_stablecoins_usd,
+                COALESCE(SUM(CASE WHEN amount_usdt > 0 AND UPPER(COALESCE(payment_asset, 'USDT')) = 'USDT'
+                                  AND substr(LOWER(tx_hash), 1, 5) NOT IN ('free_', 'pass_')
+                                  THEN amount_usdt ELSE 0 END), 0) AS sales_usdt,
+                COALESCE(SUM(CASE WHEN amount_usdt > 0 AND UPPER(COALESCE(payment_asset, 'USDT')) = 'USDC'
+                                  AND substr(LOWER(tx_hash), 1, 5) NOT IN ('free_', 'pass_')
+                                  THEN amount_usdt ELSE 0 END), 0) AS sales_usdc,
+                COALESCE(SUM(CASE WHEN amount_usdt IS NULL
+                                  AND UPPER(COALESCE(payment_asset, '')) != 'FREE'
+                                  AND substr(LOWER(tx_hash), 1, 5) NOT IN ('free_', 'pass_')
+                                  THEN 1 ELSE 0 END), 0) AS unpriced_legacy_purchases
          FROM purchases WHERE chain_id > 0`,
         [],
         (salesErr, sales) => {
@@ -2258,7 +2268,7 @@ app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSes
                                   ELSE 'PERFORMANCE_PAYOUT_REQUESTED' END AS event_type,
                                 CASE WHEN w.status = 'PAID' THEN COALESCE(w.paid_at, w.created_at) ELSE w.created_at END AS occurred_at,
                                 w.wallet_address, COALESCE(u.username, '') AS username,
-                                NULL AS tx_hash, w.payout_chain_id AS chain_id,
+                                w.payout_tx_hash AS tx_hash, w.payout_chain_id AS chain_id,
                                 COALESCE(w.user_amount, ROUND(w.amount * 0.9, 2)) AS amount_usdt,
                                 COALESCE(w.payout_asset, 'USDT') AS payment_asset,
                                 1 AS quantity, COALESCE(pl.name, w.plan_name, 'Trading account') AS plan_name,
@@ -2274,7 +2284,7 @@ app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSes
                                   ELSE 'REFERRAL_PAYOUT_REQUESTED' END AS event_type,
                                 CASE WHEN rw.status = 'PAID' THEN COALESCE(rw.paid_at, rw.created_at) ELSE rw.created_at END AS occurred_at,
                                 rw.wallet_address, COALESCE(u.username, '') AS username,
-                                NULL AS tx_hash, rw.payout_chain_id AS chain_id, rw.amount AS amount_usdt,
+                                rw.payout_tx_hash AS tx_hash, rw.payout_chain_id AS chain_id, rw.amount AS amount_usdt,
                                 COALESCE(rw.payout_asset, 'USDT') AS payment_asset,
                                 1 AS quantity, 'Referral commission' AS plan_name,
                                 NULL AS account_id, rw.status, 'COMMISSION' AS withdrawal_type
@@ -3141,15 +3151,34 @@ app.get('/api/reviews', (req, res) => {
 });
 
 function loadAdminTickets(req, res) {
+  const authorWalletMismatch = req.walletType === 'SOLANA'
+    ? `COALESCE(last_message.author_wallet, '') != ?`
+    : `COALESCE(last_message.author_wallet, '') != LOWER(?)`;
+  const readWalletPredicate = req.walletType === 'SOLANA'
+    ? 'read_state.admin_wallet = ?'
+    : 'LOWER(read_state.admin_wallet) = LOWER(?)';
   db.all(
-    `SELECT t.*, u.username, a.plan_id, p.name AS plan_name
+    `SELECT t.*, u.username, a.plan_id, p.name AS plan_name,
+            last_message.id AS last_message_id,
+            CASE WHEN COALESCE(last_message.id, 0) > COALESCE(read_state.last_read_message_id, 0)
+              AND (last_message.author_role = 'USER'
+                OR ${authorWalletMismatch})
+              THEN 1 ELSE 0 END AS is_unread
      FROM support_tickets t
      LEFT JOIN users u ON LOWER(u.wallet_address) = LOWER(t.wallet_address)
      LEFT JOIN accounts a ON a.id = t.account_id
      LEFT JOIN plans p ON p.id = a.plan_id
-     ORDER BY CASE t.status WHEN 'OPEN' THEN 0 WHEN 'NEEDS_INFO' THEN 1 ELSE 2 END,
+     LEFT JOIN (
+       SELECT ticket_id, MAX(id) AS latest_message_id
+       FROM support_ticket_messages GROUP BY ticket_id
+     ) latest ON latest.ticket_id = t.id
+     LEFT JOIN support_ticket_messages last_message ON last_message.id = latest.latest_message_id
+     LEFT JOIN support_ticket_admin_reads read_state
+       ON read_state.ticket_id = t.id AND ${readWalletPredicate}
+     ORDER BY is_unread DESC,
+       CASE t.status WHEN 'OPEN' THEN 0 WHEN 'NEEDS_INFO' THEN 1 ELSE 2 END,
        t.updated_at DESC LIMIT 250`,
-    [],
+    [req.walletAddress, req.walletAddress],
     (err, tickets) => {
       if (err) return res.status(500).json({ error: 'Unable to load support tickets.' });
       attachTicketMessages(tickets || [], (messagesErr, results) => {
@@ -3163,7 +3192,39 @@ function loadAdminTickets(req, res) {
 app.get('/api/admin/tickets', requireWalletSession, requireAdminSession, loadAdminTickets);
 app.post('/api/admin/tickets', sensitiveLimiter, requireTradeSignature, requireAdminWallet, loadAdminTickets);
 
+app.post('/api/admin/tickets/read', requireWalletSession, requireAdminSession, (req, res) => {
+  const ticketId = typeof req.body?.ticket_id === 'string' ? req.body.ticket_id : '';
+  if (!ticketId) return res.status(400).json({ error: 'A support ticket is required.' });
+  db.get('SELECT id FROM support_tickets WHERE id = ?', [ticketId], (ticketErr, ticket) => {
+    if (ticketErr) return res.status(500).json({ error: 'Unable to load support ticket.' });
+    if (!ticket) return res.status(404).json({ error: 'Support ticket not found.' });
+    db.get(
+      'SELECT COALESCE(MAX(id), 0) AS last_read_message_id FROM support_ticket_messages WHERE ticket_id = ?',
+      [ticket.id],
+      (messageErr, row) => {
+        if (messageErr) return res.status(500).json({ error: 'Unable to update ticket read state.' });
+        db.run(
+          `INSERT INTO support_ticket_admin_reads
+           (ticket_id, admin_wallet, last_read_message_id, updated_at)
+           VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+           ON CONFLICT(ticket_id, admin_wallet) DO UPDATE SET
+             last_read_message_id = excluded.last_read_message_id,
+             updated_at = CURRENT_TIMESTAMP`,
+          [ticket.id, req.walletType === 'SOLANA' ? req.walletAddress : req.walletAddress.toLowerCase(), row.last_read_message_id],
+          saveErr => {
+            if (saveErr) return res.status(500).json({ error: 'Unable to update ticket read state.' });
+            res.json({ success: true, last_read_message_id: row.last_read_message_id });
+          }
+        );
+      }
+    );
+  });
+});
+
 app.get('/api/staff/tickets', requireWalletSession, requireSupportStaff, (req, res) => {
+  const staffWalletPredicate = req.walletType === 'SOLANA'
+    ? 't.assigned_staff_wallet = ?'
+    : 'LOWER(t.assigned_staff_wallet) = LOWER(?)';
   db.all(
     `SELECT t.*, u.username, a.plan_id, p.name AS plan_name
      FROM support_tickets t
@@ -3171,14 +3232,48 @@ app.get('/api/staff/tickets', requireWalletSession, requireSupportStaff, (req, r
      LEFT JOIN accounts a ON a.id = t.account_id
      LEFT JOIN plans p ON p.id = a.plan_id
      WHERE t.status != 'CLOSED'
+       AND (t.assigned_staff_wallet IS NULL OR ${staffWalletPredicate})
      ORDER BY CASE t.status WHEN 'OPEN' THEN 0 ELSE 1 END, t.updated_at DESC LIMIT 250`,
-    [],
+    [req.walletAddress],
     (err, tickets) => {
       if (err) return res.status(500).json({ error: 'Unable to load support tickets.' });
       attachTicketMessages(tickets || [], (messagesErr, results) => {
         if (messagesErr) return res.status(500).json({ error: 'Unable to load ticket replies.' });
         res.json({ tickets: results });
       });
+    }
+  );
+});
+
+app.post('/api/staff/tickets/accept', sensitiveLimiter, requireWalletSession, requireSupportStaff, (req, res) => {
+  const ticketId = typeof req.body?.ticket_id === 'string' ? req.body.ticket_id : '';
+  if (!ticketId) return res.status(400).json({ error: 'A support ticket is required.' });
+  db.run(
+    `UPDATE support_tickets
+     SET assigned_staff_wallet = ?, assigned_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+     WHERE id = ? AND status != 'CLOSED' AND assigned_staff_wallet IS NULL`,
+    [req.walletAddress, ticketId],
+    function(acceptErr) {
+      if (acceptErr) return res.status(500).json({ error: 'Unable to accept support ticket.' });
+      if (this.changes === 1) return res.json({ success: true, assigned_staff_wallet: req.walletAddress });
+      const staffWalletPredicate = req.walletType === 'SOLANA'
+        ? 'assigned_staff_wallet = ?'
+        : 'LOWER(assigned_staff_wallet) = LOWER(?)';
+      db.get(
+        `SELECT status, assigned_staff_wallet,
+                CASE WHEN ${staffWalletPredicate} THEN 1 ELSE 0 END AS assigned_to_current_staff
+         FROM support_tickets WHERE id = ?`,
+        [req.walletAddress, ticketId],
+        (ticketErr, ticket) => {
+          if (ticketErr) return res.status(500).json({ error: 'Unable to verify ticket assignment.' });
+          if (!ticket) return res.status(404).json({ error: 'Support ticket not found.' });
+          if (ticket.status === 'CLOSED') return res.status(409).json({ error: 'This ticket is already closed.' });
+          if (ticket.assigned_to_current_staff) {
+            return res.json({ success: true, assigned_staff_wallet: ticket.assigned_staff_wallet });
+          }
+          res.status(409).json({ error: 'Another support agent has already accepted this ticket.' });
+        }
+      );
     }
   );
 });
@@ -3192,10 +3287,16 @@ app.post('/api/staff/tickets/action', sensitiveLimiter, requireWalletSession, re
       (action === 'CLOSE' && message.length > 5000)) {
     return res.status(400).json({ error: 'A ticket, valid action, and reply within 5,000 characters are required.' });
   }
-  db.get('SELECT id, status FROM support_tickets WHERE id = ?', [ticketId], (err, ticket) => {
+  db.get('SELECT id, status, assigned_staff_wallet FROM support_tickets WHERE id = ?', [ticketId], (err, ticket) => {
     if (err) return res.status(500).json({ error: 'Unable to load support ticket.' });
     if (!ticket) return res.status(404).json({ error: 'Support ticket not found.' });
     if (ticket.status === 'CLOSED') return res.status(409).json({ error: 'This ticket is already closed.' });
+    const assignedToCurrentStaff = req.walletType === 'SOLANA'
+      ? ticket.assigned_staff_wallet === req.walletAddress
+      : String(ticket.assigned_staff_wallet || '').toLowerCase() === String(req.walletAddress || '').toLowerCase();
+    if (!assignedToCurrentStaff) {
+      return res.status(409).json({ error: 'Accept this ticket before replying or closing it.' });
+    }
     db.serialize(() => {
       db.run('BEGIN IMMEDIATE', beginErr => {
         if (beginErr) return res.status(500).json({ error: 'Unable to start ticket update.' });
@@ -3284,7 +3385,16 @@ app.post('/api/admin/support-staff/action', sensitiveLimiter, requireTradeSignat
         function(removeErr) {
           if (removeErr) return rollback(500, 'Unable to remove support staff wallet.');
           if (this.changes !== 1) return rollback(404, 'Active support staff wallet not found.');
-          persistAudit();
+          db.run(
+            `UPDATE support_tickets SET assigned_staff_wallet = NULL, assigned_at = NULL,
+               updated_at = CURRENT_TIMESTAMP
+             WHERE ${getWalletType(normalizedWallet) === 'SOLANA' ? 'assigned_staff_wallet = ?' : 'LOWER(assigned_staff_wallet) = LOWER(?)'}
+               AND status != 'CLOSED'`,
+            [normalizedWallet],
+            releaseErr => releaseErr
+              ? rollback(500, 'Unable to release tickets assigned to the removed support wallet.')
+              : persistAudit()
+          );
         }
       );
     });
@@ -3324,9 +3434,10 @@ app.post('/api/admin/tickets/action', sensitiveLimiter, requireTradeSignature, r
         );
         if (!message) return updateStatus();
         db.run(
-          `INSERT INTO support_ticket_messages (ticket_id, author_role, author_name, body)
-           VALUES (?, 'ADMIN', 'Blastrr Support', ?)`,
-          [ticket.id, message],
+          `INSERT INTO support_ticket_messages
+           (ticket_id, author_role, author_name, body, author_wallet)
+           VALUES (?, 'ADMIN', 'Blastrr Support', ?, ?)`,
+          [ticket.id, message, req.walletAddress],
           (insertErr) => insertErr ? rollback('Unable to save admin reply.') : updateStatus()
         );
       });
@@ -4162,6 +4273,20 @@ app.put('/api/accounts/:accountId/journal', sensitiveLimiter, requireWalletSessi
 });
 
 // --- SECURE PURCHASE ENDPOINT (WITH MULTI-CHAIN ON-CHAIN VERIFICATION) ---
+function findUsedFinancialTransactionId(transactionId, callback) {
+  const isEvmTransaction = /^0x[0-9a-f]{64}$/i.test(transactionId);
+  const comparisonFor = column => isEvmTransaction
+    ? `LOWER(${column}) = LOWER(?)`
+    : `${column} = ?`;
+  db.get(
+    `SELECT EXISTS(SELECT 1 FROM purchases WHERE chain_id > 0 AND ${comparisonFor('tx_hash')})
+         OR EXISTS(SELECT 1 FROM withdrawals WHERE payout_tx_hash IS NOT NULL AND ${comparisonFor('payout_tx_hash')})
+         OR EXISTS(SELECT 1 FROM referral_withdrawals WHERE payout_tx_hash IS NOT NULL AND ${comparisonFor('payout_tx_hash')}) AS used`,
+    [transactionId, transactionId, transactionId],
+    (err, row) => callback(err, Boolean(row?.used))
+  );
+}
+
 app.post('/api/accounts/purchase', sensitiveLimiter, requireWalletSession, requireUserNotSuspended, async (req, res) => {
   const { wallet_address, plan_id, tx_hash, chain_id } = req.body;
   const paymentAsset = typeof req.body?.payment_asset === 'string' ? req.body.payment_asset.toUpperCase() : 'USDT';
@@ -4293,13 +4418,31 @@ app.post('/api/accounts/purchase', sensitiveLimiter, requireWalletSession, requi
                   db.run(
                     `INSERT INTO purchases (
                        tx_hash, chain_id, wallet_address, account_id, quantity, amount_usdt, payment_asset, payer_address
-                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                     )
+                     SELECT ?, ?, ?, ?, ?, ?, ?, ?
+                     WHERE NOT EXISTS (
+                       SELECT 1 FROM purchases
+                       WHERE chain_id > 0
+                         AND ${purchaseChainId === 101 ? 'tx_hash = ?' : 'LOWER(tx_hash) = LOWER(?)'}
+                     )
+                       AND NOT EXISTS (
+                       SELECT 1 FROM withdrawals
+                       WHERE payout_tx_hash IS NOT NULL
+                         AND ${purchaseChainId === 101 ? 'payout_tx_hash = ?' : 'LOWER(payout_tx_hash) = LOWER(?)'}
+                     )
+                       AND NOT EXISTS (
+                       SELECT 1 FROM referral_withdrawals
+                       WHERE payout_tx_hash IS NOT NULL
+                         AND ${purchaseChainId === 101 ? 'payout_tx_hash = ?' : 'LOWER(payout_tx_hash) = LOWER(?)'}
+                     )`,
                     [
                       normalizedTxHash, purchaseChainId, wallet_address, accountId, quantity,
-                      totalPrice, recordedPaymentAsset, payerAddress
+                      totalPrice, recordedPaymentAsset, payerAddress,
+                      normalizedTxHash, normalizedTxHash, normalizedTxHash
                     ],
-                    (purchaseErr) => {
+                    function(purchaseErr) {
                       if (purchaseErr) return rollback(409, 'This transaction or discount code has already been used.');
+                      if (this.changes !== 1) return rollback(409, 'This transaction ID has already been used.');
                   const provisionAccounts = (index, onComplete) => {
                     if (index >= accountIds.length) return onComplete();
                     db.run(
@@ -4881,7 +5024,47 @@ app.post('/api/admin/users/accounts', sensitiveLimiter, requireTradeSignature, r
         if (err) return res.status(500).json({ error: "Unable to load this user's accounts." });
         const rows = accounts || [];
         const loadNext = index => {
-          if (index >= rows.length) return res.json({ accounts: rows, ...security });
+          if (index >= rows.length) {
+            return db.all(
+              `SELECT 'PURCHASE' AS transaction_type, p.created_at, NULL AS paid_at,
+                      p.amount_usdt AS amount, NULL AS gross_amount, NULL AS admin_share,
+                      COALESCE(p.payment_asset, 'USDT') AS asset, p.chain_id,
+                      p.tx_hash AS transaction_id, p.tx_hash,
+                      p.quantity, COALESCE(pl.name, 'Trading account') AS description,
+                      CASE WHEN p.chain_id > 0 THEN 'VERIFIED' ELSE 'FREE' END AS status,
+                      p.account_id
+               FROM purchases p
+               LEFT JOIN accounts a ON a.id = p.account_id
+               LEFT JOIN plans pl ON pl.id = a.plan_id
+               WHERE LOWER(p.wallet_address) = LOWER(?)
+               UNION ALL
+               SELECT 'ACCOUNT_WITHDRAWAL' AS transaction_type, w.created_at, w.paid_at,
+                      COALESCE(w.user_amount, ROUND(w.amount * 0.9, 2)) AS amount,
+                      w.amount AS gross_amount, w.admin_share,
+                      COALESCE(w.payout_asset, 'USDT') AS asset, w.payout_chain_id AS chain_id,
+                      w.id AS transaction_id, w.payout_tx_hash AS tx_hash, 1 AS quantity,
+                      COALESCE(pl.name, w.plan_name, 'Trading account') AS description,
+                      w.status, w.account_id
+               FROM withdrawals w
+               LEFT JOIN accounts a ON a.id = w.account_id
+               LEFT JOIN plans pl ON pl.id = a.plan_id
+               WHERE LOWER(w.wallet_address) = LOWER(?)
+               UNION ALL
+               SELECT 'REFERRAL_WITHDRAWAL' AS transaction_type, rw.created_at, rw.paid_at,
+                      rw.amount AS amount, rw.amount AS gross_amount, 0 AS admin_share,
+                      COALESCE(rw.payout_asset, 'USDT') AS asset, rw.payout_chain_id AS chain_id,
+                      rw.id AS transaction_id, rw.payout_tx_hash AS tx_hash, 1 AS quantity, 'Referral commission' AS description,
+                      rw.status, NULL AS account_id
+               FROM referral_withdrawals rw
+               WHERE LOWER(rw.wallet_address) = LOWER(?)
+               ORDER BY created_at DESC`,
+              [wallet, wallet, wallet],
+              (transactionsErr, transactions) => {
+                if (transactionsErr) return res.status(500).json({ error: "Unable to load this user's financial transactions." });
+                res.json({ accounts: rows, financial_transactions: transactions || [], ...security });
+              }
+            );
+          }
           const row = rows[index];
           loadAccountWithLiveRisk(row.id, (riskErr, liveAccount) => {
             if (riskErr) return res.status(503).json({ error: `Unable to calculate live risk for account ${row.id}.` });
@@ -4947,8 +5130,12 @@ app.post('/api/admin/accounts/action', sensitiveLimiter, requireTradeSignature, 
 app.post('/api/admin/withdrawals/action', sensitiveLimiter, requireTradeSignature, requireAdminWallet, (req, res) => {
   const { withdrawal_id, action, type } = req.body;
   const normalizedAction = action === 'APPROVE' ? 'PAID' : action;
+  const requestedTxHash = typeof req.body?.payout_tx_hash === 'string' ? req.body.payout_tx_hash.trim() : '';
   if (!withdrawal_id || !['REJECT', 'PAID'].includes(normalizedAction) || !['ACCOUNT', 'COMMISSION'].includes(type)) {
     return res.status(400).json({ error: "A valid withdrawal ID and action are required." });
+  }
+  if (normalizedAction === 'PAID' && !requestedTxHash) {
+    return res.status(400).json({ error: 'Enter the payout transaction ID before marking this withdrawal paid.' });
   }
 
   const isCommission = type === 'COMMISSION';
@@ -4962,14 +5149,17 @@ app.post('/api/admin/withdrawals/action', sensitiveLimiter, requireTradeSignatur
         if (!wdr) return rollback(404, 'Withdrawal request not found.');
         if (wdr.status !== 'PENDING') return rollback(409, 'Request already processed.');
 
+        let payoutTxHash = null;
         const updateStatus = () => db.run(
-          `UPDATE ${tableName} SET status = ?, paid_at = CASE WHEN ? = 'PAID' THEN CURRENT_TIMESTAMP ELSE paid_at END${isCommission ? '' : ", funds_deducted = CASE WHEN ? = 'PAID' THEN 1 ELSE funds_deducted END"}
+          `UPDATE ${tableName} SET status = ?, paid_at = CASE WHEN ? = 'PAID' THEN CURRENT_TIMESTAMP ELSE paid_at END,
+           payout_tx_hash = CASE WHEN ? = 'PAID' THEN ? ELSE payout_tx_hash END${isCommission ? '' : ", funds_deducted = CASE WHEN ? = 'PAID' THEN 1 ELSE funds_deducted END"}
            WHERE id = ? AND status = 'PENDING'`,
           isCommission
-            ? [normalizedAction === 'REJECT' ? 'REJECTED' : 'PAID', normalizedAction, withdrawal_id]
-            : [normalizedAction === 'REJECT' ? 'REJECTED' : 'PAID', normalizedAction, normalizedAction, withdrawal_id],
+            ? [normalizedAction === 'REJECT' ? 'REJECTED' : 'PAID', normalizedAction, normalizedAction, payoutTxHash, withdrawal_id]
+            : [normalizedAction === 'REJECT' ? 'REJECTED' : 'PAID', normalizedAction, normalizedAction, payoutTxHash, normalizedAction, withdrawal_id],
           function(updateErr) {
-            if (updateErr) return rollback(500, 'Unable to update withdrawal status.');
+            if (updateErr) return rollback(updateErr.code === 'SQLITE_CONSTRAINT' ? 409 : 500,
+              updateErr.code === 'SQLITE_CONSTRAINT' ? 'This transaction ID has already been used.' : 'Unable to update withdrawal status.');
             if (this.changes !== 1) return rollback(409, 'Request already processed.');
             db.run('COMMIT', (commitErr) => {
               if (commitErr) return rollback(500, 'Unable to commit withdrawal update.');
@@ -4978,55 +5168,77 @@ app.post('/api/admin/withdrawals/action', sensitiveLimiter, requireTradeSignatur
           }
         );
 
-        if (isCommission || !wdr.account_id) return updateStatus();
-        if (normalizedAction === 'REJECT') {
-          if (Number(wdr.funds_deducted) !== 1) return updateStatus();
-          return db.run(
-            `UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?`,
-            [wdr.amount, wdr.account_id],
-            (refundErr) => {
-              if (refundErr) return rollback(500, 'Unable to return previously reserved withdrawal funds.');
-              updateStatus();
-            }
-          );
-        }
-        if (Number(wdr.funds_deducted) === 1) return updateStatus();
-        db.get(
-          `SELECT a.current_balance, a.current_equity, a.daily_starting_balance, a.admin_frozen,
-           a.initial_balance, p.max_drawdown_pct
-           FROM accounts a JOIN plans p ON a.plan_id = p.id WHERE a.id = ?`,
-          [wdr.account_id],
-          (accountErr, account) => {
-            if (accountErr) return rollback(500, 'Unable to load account for withdrawal approval.');
-            if (!account) return rollback(404, 'Withdrawal account not found.');
-            if (Number(account.admin_frozen) === 1) return rollback(409, 'Unfreeze this account before approving the withdrawal.');
-            const withdrawalFloor = getProtectedPayoutBalance(account.initial_balance, account.max_drawdown_pct);
-            db.get(
-              `SELECT COALESCE(SUM(amount), 0) AS other_pending FROM withdrawals
-               WHERE account_id = ? AND status = 'PENDING' AND id != ?`,
-              [wdr.account_id, withdrawal_id],
-              (pendingErr, pendingRow) => {
-                if (pendingErr) return rollback(500, 'Unable to check other pending withdrawals.');
-                if (account.current_balance - wdr.amount - Number(pendingRow.other_pending) < withdrawalFloor - 0.005) {
-                  return rollback(409, `Approval would reduce account balance or remaining pending payouts below its protected $${withdrawalFloor.toFixed(2)} floor.`);
-                }
-                db.run(
-                  `UPDATE accounts
-                   SET current_balance = current_balance - ?,
-                       current_equity = current_equity - ?,
-                       daily_starting_balance = daily_starting_balance - ?
-                   WHERE id = ? AND current_balance - ? >= ? AND admin_frozen = 0`,
-                  [wdr.amount, wdr.amount, wdr.amount, wdr.account_id, wdr.amount, withdrawalFloor],
-                  function(balanceErr) {
-                    if (balanceErr) return rollback(500, 'Unable to deduct approved withdrawal.');
-                    if (this.changes !== 1) return rollback(409, 'Account balance changed; refresh and retry.');
-                    updateStatus();
-                  }
-                );
+        const processWithdrawal = () => {
+          if (isCommission || !wdr.account_id) return updateStatus();
+          if (normalizedAction === 'REJECT') {
+            if (Number(wdr.funds_deducted) !== 1) return updateStatus();
+            return db.run(
+              `UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?`,
+              [wdr.amount, wdr.account_id],
+              (refundErr) => {
+                if (refundErr) return rollback(500, 'Unable to return previously reserved withdrawal funds.');
+                updateStatus();
               }
             );
           }
-        );
+          if (Number(wdr.funds_deducted) === 1) return updateStatus();
+          db.get(
+            `SELECT a.current_balance, a.current_equity, a.daily_starting_balance, a.admin_frozen,
+             a.initial_balance, p.max_drawdown_pct
+             FROM accounts a JOIN plans p ON a.plan_id = p.id WHERE a.id = ?`,
+            [wdr.account_id],
+            (accountErr, account) => {
+              if (accountErr) return rollback(500, 'Unable to load account for withdrawal approval.');
+              if (!account) return rollback(404, 'Withdrawal account not found.');
+              if (Number(account.admin_frozen) === 1) return rollback(409, 'Unfreeze this account before approving the withdrawal.');
+              const withdrawalFloor = getProtectedPayoutBalance(account.initial_balance, account.max_drawdown_pct);
+              db.get(
+                `SELECT COALESCE(SUM(amount), 0) AS other_pending FROM withdrawals
+                 WHERE account_id = ? AND status = 'PENDING' AND id != ?`,
+                [wdr.account_id, withdrawal_id],
+                (pendingErr, pendingRow) => {
+                  if (pendingErr) return rollback(500, 'Unable to check other pending withdrawals.');
+                  if (account.current_balance - wdr.amount - Number(pendingRow.other_pending) < withdrawalFloor - 0.005) {
+                    return rollback(409, `Approval would reduce account balance or remaining pending payouts below its protected $${withdrawalFloor.toFixed(2)} floor.`);
+                  }
+                  db.run(
+                    `UPDATE accounts
+                     SET current_balance = current_balance - ?,
+                         current_equity = current_equity - ?,
+                         daily_starting_balance = daily_starting_balance - ?
+                     WHERE id = ? AND current_balance - ? >= ? AND admin_frozen = 0`,
+                    [wdr.amount, wdr.amount, wdr.amount, wdr.account_id, wdr.amount, withdrawalFloor],
+                    function(balanceErr) {
+                      if (balanceErr) return rollback(500, 'Unable to deduct approved withdrawal.');
+                      if (this.changes !== 1) return rollback(409, 'Account balance changed; refresh and retry.');
+                      updateStatus();
+                    }
+                  );
+                }
+              );
+            }
+          );
+        };
+
+        if (normalizedAction === 'REJECT') return processWithdrawal();
+        const payoutChainId = Number(wdr.payout_chain_id);
+        const payoutAsset = String(wdr.payout_asset || 'USDT').toUpperCase();
+        const isSolanaPayout = payoutChainId === 101;
+        const isSupportedPayout = isSolanaPayout
+          ? Boolean(SOLANA_TOKEN_ADDRESSES[payoutAsset])
+          : Boolean(SUPPORTED_EVM_CHAINS[payoutChainId]?.tokens?.[payoutAsset]);
+        const isValidSolanaHash = /^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(requestedTxHash);
+        const isValidEvmHash = /^0x[0-9a-f]{64}$/i.test(requestedTxHash);
+        if ((payoutChainId > 0 && !isSupportedPayout) ||
+            (isSolanaPayout ? !isValidSolanaHash : payoutChainId > 0 ? !isValidEvmHash : !(isValidSolanaHash || isValidEvmHash))) {
+          return rollback(400, 'Enter a valid transaction ID for the payout network and asset.');
+        }
+        payoutTxHash = isSolanaPayout || isValidSolanaHash ? requestedTxHash : requestedTxHash.toLowerCase();
+        findUsedFinancialTransactionId(payoutTxHash, (transactionErr, alreadyUsed) => {
+          if (transactionErr) return rollback(500, 'Unable to check whether this payout transaction was already recorded.');
+          if (alreadyUsed) return rollback(409, 'This transaction ID has already been used.');
+          processWithdrawal();
+        });
       });
     });
   });

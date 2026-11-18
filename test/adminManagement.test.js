@@ -33,12 +33,18 @@ test('admin plan management validates all plan fields and protects database edit
 test('admin user search loads accounts on demand and separates live from archived statuses', () => {
   assert.match(serverJs, /app\.post\('\/api\/admin\/users\/search', sensitiveLimiter, requireTradeSignature, requireAdminWallet/);
   assert.match(serverJs, /app\.post\('\/api\/admin\/users\/accounts', sensitiveLimiter, requireTradeSignature, requireAdminWallet/);
+  assert.match(serverJs, /financial_transactions: transactions/);
+  assert.match(serverJs, /FROM purchases p[\s\S]*?FROM withdrawals w[\s\S]*?FROM referral_withdrawals rw/);
+  assert.match(serverJs, /w\.id AS transaction_id, w\.payout_tx_hash AS tx_hash/);
   assert.match(serverJs, /instr\(LOWER\(COALESCE\(u\.username, ''\)\), LOWER\(\?\)\)/);
   assert.match(serverJs, /LIMIT 25/);
   assert.match(appHtml, /id="admin-user-search-form"/);
   assert.match(appHtml, /id="admin-user-search-results"/);
   assert.match(appJs, /\/api\/admin\/users\/search/);
   assert.match(appJs, /\/api\/admin\/users\/accounts/);
+  assert.match(appJs, /Financial transactions · \$\{financialTransactions\.length\}/);
+  assert.match(appJs, /No purchases or withdrawals recorded/);
+  assert.match(appJs, /transaction\.tx_hash/);
   assert.match(appJs, /account\.status === 'ACTIVE'/);
   assert.match(appJs, /renderGroup\('Archived accounts', archived\)/);
   assert.doesNotMatch(appJs, /\/api\/admin\/accounts'/);
@@ -67,5 +73,8 @@ test('admin can suspend users and review retained login IP warnings without bloc
   assert.match(serverJs, /AS new_ip_count/);
   assert.match(appJs, /New IP detected:/);
   assert.match(appJs, /adminUserAction\(userButton\.dataset\.adminUserWallet/);
+  assert.match(databaseJs, /CREATE UNIQUE INDEX IF NOT EXISTS idx_withdrawals_payout_tx_hash/);
+  assert.match(databaseJs, /CREATE UNIQUE INDEX IF NOT EXISTS idx_referral_withdrawals_payout_tx_hash/);
+  assert.match(serverJs, /This transaction ID has already been used/);
   assert.match(appHtml, /retained for 180 days/);
 });

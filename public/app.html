@@ -907,6 +907,7 @@
             </div>
             <div class="admin-section-tabs" role="tablist" aria-label="Admin sections">
                 <button id="admin-operations-tab" class="admin-section-tab active" role="tab" aria-selected="true" aria-controls="admin-operations-panel" onclick="switchAdminSection('admin-operations-panel')">Operations</button>
+                <button id="admin-support-tab" class="admin-section-tab" role="tab" aria-selected="false" aria-controls="admin-support-inbox-panel" onclick="switchAdminSection('admin-support-inbox-panel')">Support inbox <span id="admin-support-tab-badge" class="admin-tab-badge" hidden></span></button>
                 <button id="admin-creators-tab" class="admin-section-tab" role="tab" aria-selected="false" aria-controls="admin-creators-panel" onclick="switchAdminSection('admin-creators-panel')">Creators &amp; Promos</button>
                 <button id="admin-battlepass-tab" class="admin-section-tab" role="tab" aria-selected="false" aria-controls="admin-battlepass-panel" onclick="switchAdminSection('admin-battlepass-panel')">BlastrrPass</button>
                 <button id="admin-maintenance-tab" class="admin-section-tab" role="tab" aria-selected="false" aria-controls="admin-maintenance-panel" onclick="switchAdminSection('admin-maintenance-panel')">Maintenance</button>
@@ -925,7 +926,7 @@
                 </div>
                 <div class="admin-quick-action-group">
                     <h2>Community &amp; support</h2>
-                    <a class="admin-quick-action" href="#admin-ticket-management">Support tickets <span>Respond to customer requests</span></a>
+                    <button class="admin-quick-action" type="button" onclick="switchAdminSection('admin-support-inbox-panel')">Support inbox <span>Read and respond to customer requests</span></button>
                     <a class="admin-quick-action" href="#admin-support-staff-management">Support staff <span>Grant or remove staff access</span></a>
                     <a class="admin-quick-action" href="#admin-review-management">Review moderation <span>Publish or hide reviews</span></a>
                 </div>
@@ -934,7 +935,7 @@
             <div class="admin-dashboard-grid" aria-label="Operations summary">
                 <article class="admin-dashboard-metric"><span>Active wallet sessions</span><strong id="admin-active-wallets">—</strong></article>
                 <article class="admin-dashboard-metric"><span>Wallets connected (tracked)</span><strong id="admin-all-time-wallets">—</strong></article>
-                <article class="admin-dashboard-metric admin-sales-metric"><span>Verified sales · USD face value</span><strong id="admin-sales-total">—</strong><small id="admin-sales-count"></small><small id="admin-sales-breakdown"></small></article>
+                <article class="admin-dashboard-metric admin-sales-metric"><span>Verified sales</span><strong id="admin-verified-sales-count">—</strong><small id="admin-sales-total"></small><small id="admin-sales-breakdown"></small></article>
                 <article class="admin-dashboard-metric"><span>Paid withdrawals</span><strong id="admin-paid-out-total">—</strong><small id="admin-paid-out-count"></small></article>
                 <article class="admin-dashboard-metric"><span>Withdrawal requests</span><strong id="admin-withdrawal-count">—</strong></article>
                 <article class="admin-dashboard-metric"><span>Pending withdrawals</span><strong id="admin-pending-out-total">—</strong><small id="admin-pending-out-count"></small></article>
@@ -1011,12 +1012,6 @@
                     <p class="account-chart-empty">Loading plans...</p>
                 </div>
             </div>
-            <div id="admin-ticket-management" class="card admin-support-review">
-                <div class="card-title">Support ticket queue</div>
-                <div id="admin-ticket-list" class="support-card-list">
-                    <p class="account-chart-empty">Loading support tickets...</p>
-                </div>
-            </div>
             <div id="admin-support-staff-management" class="card admin-support-staff-management">
                 <div class="card-title">Support staff access</div>
                 <p class="support-note">Support staff receive a separate workspace limited to Tickets and Reviews. Add or remove access by wallet address.</p>
@@ -1043,6 +1038,27 @@
                     <p class="account-chart-empty">Loading reviews...</p>
                 </div>
             </div>
+            </div>
+            <div id="admin-support-inbox-panel" class="admin-section-panel" role="tabpanel" hidden>
+                <div class="admin-inbox-heading">
+                    <div><h2>Support inbox</h2><p class="support-note">Review unread and previous conversations, grouped by trader.</p></div>
+                    <button class="btn-wallet" type="button" onclick="loadAdminTickets()">Refresh inbox</button>
+                </div>
+                <div class="admin-inbox-filters" role="group" aria-label="Support ticket filters">
+                    <button type="button" aria-pressed="true" class="admin-inbox-filter active" data-admin-ticket-filter="UNREAD" onclick="setAdminTicketFilter('UNREAD')">Unread <span id="admin-ticket-unread-count">0</span></button>
+                    <button type="button" aria-pressed="false" class="admin-inbox-filter" data-admin-ticket-filter="READ" onclick="setAdminTicketFilter('READ')">Read <span id="admin-ticket-read-count">0</span></button>
+                    <button type="button" aria-pressed="false" class="admin-inbox-filter" data-admin-ticket-filter="CLOSED" onclick="setAdminTicketFilter('CLOSED')">Closed <span id="admin-ticket-closed-count">0</span></button>
+                </div>
+                <div class="admin-inbox-layout">
+                    <aside class="admin-inbox-sidebar" aria-label="Ticket conversations">
+                        <div id="admin-ticket-list" class="admin-inbox-user-list">
+                            <p class="account-chart-empty">Loading support tickets...</p>
+                        </div>
+                    </aside>
+                    <section id="admin-ticket-main" class="admin-inbox-conversation" aria-live="polite">
+                        <p class="account-chart-empty">Select a conversation to view its messages.</p>
+                    </section>
+                </div>
             </div>
             <div id="admin-creators-panel" class="admin-section-panel" role="tabpanel" hidden>
                 <div class="card">

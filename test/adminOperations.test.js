@@ -10,9 +10,12 @@ const landingHtml = fs.readFileSync('public/index.html', 'utf8');
 
 test('admin operations report recorded money flows and protect live reads with the admin wallet session', () => {
   assert.match(databaseJs, /amount_usdt REAL/);
+  assert.match(databaseJs, /tx_hash TEXT PRIMARY KEY/);
   assert.match(serverJs, /INSERT INTO purchases \(tx_hash, chain_id, wallet_address, account_id, quantity, amount_usdt\)/);
-  assert.match(serverJs, /COALESCE\(SUM\(amount_usdt\), 0\) AS sales_stablecoins_usd/);
-  assert.match(serverJs, /THEN COALESCE\(amount_usdt, 0\) ELSE 0 END\), 0\) AS sales_usdt/);
+  assert.match(serverJs, /quantity,\s*totalPrice, recordedPaymentAsset, payerAddress/);
+  assert.match(serverJs, /COUNT\(CASE WHEN amount_usdt > 0[\s\S]*?AS verified_purchases/);
+  assert.match(serverJs, /COALESCE\(SUM\(CASE WHEN amount_usdt > 0[\s\S]*?THEN amount_usdt ELSE 0 END\), 0\) AS sales_stablecoins_usd/);
+  assert.match(serverJs, /amount_usdt > 0 AND UPPER\(COALESCE\(payment_asset, 'USDT'\)\) = 'USDT'[\s\S]*?THEN amount_usdt ELSE 0 END\), 0\) AS sales_usdt/);
   assert.match(serverJs, /AS sales_usdc/);
   assert.match(serverJs, /unpriced_legacy_purchases/);
   assert.match(serverJs, /COALESCE\(user_amount, ROUND\(amount \* 0\.9, 2\)\)/);
@@ -28,10 +31,16 @@ test('admin operations report recorded money flows and protect live reads with t
   assert.match(appJs, /setInterval\(\(\) => \{[\s\S]*?loadAdminOperationsDashboard\(\);[\s\S]*?\}, 15000\)/);
   assert.match(appHtml, /id="admin-operations-feed"/);
   assert.match(appHtml, /id="admin-sales-total"/);
+  assert.match(appHtml, /id="admin-verified-sales-count"/);
   assert.match(appHtml, /admin-quick-actions/);
   assert.match(appHtml, /id="admin-payout-queue-card"/);
   assert.match(appHtml, /id="admin-paid-out-total"/);
-  assert.match(appJs, /verifiedPurchases > 0 && unpricedPurchases === verifiedPurchases && salesTotal === 0/);
+  assert.match(appJs, /setText\('admin-verified-sales-count', verifiedPurchases\.toLocaleString\(\)\)/);
+  assert.match(databaseJs, /amount_usdt = 0, payment_asset = 'FREE'/);
+  assert.match(serverJs, /WHERE NOT EXISTS \([\s\S]*?FROM purchases[\s\S]*?LOWER\(tx_hash\) = LOWER\(\?\)/);
+  assert.match(databaseJs, /CREATE UNIQUE INDEX IF NOT EXISTS idx_withdrawals_payout_tx_hash/);
+  assert.match(serverJs, /payout_tx_hash = CASE WHEN \? = 'PAID' THEN \?/);
+  assert.match(appJs, /payout_tx_hash: payoutTxHash/);
 });
 
 test('purchase-linked referral provenance is persisted and historical ambiguity is not fabricated', () => {

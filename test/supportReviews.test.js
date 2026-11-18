@@ -12,6 +12,8 @@ const landingHtml = fs.readFileSync('public/index.html', 'utf8');
 test('support ticket and review schema is text-only and constrained', () => {
   assert.match(databaseJs, /CREATE TABLE IF NOT EXISTS support_tickets/);
   assert.match(databaseJs, /CREATE TABLE IF NOT EXISTS support_ticket_messages/);
+  assert.match(databaseJs, /CREATE TABLE IF NOT EXISTS support_ticket_admin_reads/);
+  assert.match(databaseJs, /assigned_staff_wallet TEXT/);
   assert.match(databaseJs, /CHECK\(author_role IN \('USER', 'ADMIN'\)\)/);
   assert.match(databaseJs, /CREATE TABLE IF NOT EXISTS user_reviews/);
   assert.match(databaseJs, /account_id TEXT PRIMARY KEY,[\s\S]*?FOREIGN KEY\(account_id\) REFERENCES accounts\(id\)/);
@@ -31,7 +33,7 @@ test('ticket endpoints enforce wallet ownership, account ownership, and admin au
   assert.match(serverJs, /app\.post\('\/api\/user\/tickets\/:ticketId\/reply', sensitiveLimiter, requireWalletSession/);
   assert.match(serverJs, /app\.post\('\/api\/admin\/tickets', sensitiveLimiter, requireTradeSignature, requireAdminWallet/);
   assert.match(serverJs, /app\.post\('\/api\/admin\/tickets\/action', sensitiveLimiter, requireTradeSignature, requireAdminWallet/);
-  assert.match(serverJs, /INSERT INTO support_ticket_messages \(ticket_id, author_role, author_name, body\)[\s\S]*?'ADMIN', 'Blastrr Support'/);
+  assert.match(serverJs, /INSERT INTO support_ticket_messages[\s\S]*?'ADMIN', 'Blastrr Support'/);
   assert.match(serverJs, /app\.get\('\/api\/user\/tickets'[\s\S]*?attachTicketMessages\(tickets \|\| \[\]/);
   assert.match(serverJs, /ticket\.status === 'CLOSED'/);
   assert.match(serverJs, /SET status = 'OPEN'/);
@@ -62,6 +64,8 @@ test('review submission and moderation are wallet-bound and admin-protected', ()
 test('support and moderation views render action controls and visual ticket statuses', () => {
   assert.match(appHtml, /id="user-ticket-list"/);
   assert.match(appHtml, /id="admin-ticket-list"/);
+  assert.match(appHtml, /id="admin-support-inbox-panel"/);
+  assert.match(appHtml, /data-admin-ticket-filter="UNREAD"/);
   assert.match(appHtml, /id="admin-review-list"/);
   assert.match(appHtml, /id="review-account" required disabled/);
   assert.match(appHtml, /Any account assigned to your wallet is eligible, including free promo accounts/);
@@ -71,6 +75,15 @@ test('support and moderation views render action controls and visual ticket stat
   assert.match(appJs, /account_id: document\.getElementById\('review-account'\)\.value/);
   assert.match(appJs, /data-admin-ticket-action="REPLY"/);
   assert.match(appJs, /data-admin-ticket-action="CLOSE"/);
+  assert.match(appJs, /\/api\/admin\/tickets\/read/);
+  assert.match(serverJs, /app\.post\('\/api\/admin\/tickets\/read', requireWalletSession, requireAdminSession/);
+  assert.match(serverJs, /CASE WHEN COALESCE\(last_message\.id, 0\) > COALESCE\(read_state\.last_read_message_id, 0\)/);
+  assert.match(serverJs, /app\.post\('\/api\/staff\/tickets\/accept', sensitiveLimiter, requireWalletSession, requireSupportStaff/);
+  assert.match(serverJs, /assigned_staff_wallet IS NULL/);
+  assert.match(serverJs, /t\.assigned_staff_wallet IS NULL OR \$\{staffWalletPredicate\}/);
+  assert.match(serverJs, /Accept this ticket before replying or closing it/);
+  assert.match(serverJs, /Unable to release tickets assigned to the removed support wallet/);
+  assert.match(appJs, /data-staff-ticket-action="ACCEPT"/);
   assert.match(appJs, /data-review-action="\$\{Number\(review\.published\) \? 'HIDE' : 'PUBLISH'\}"/);
   assert.match(appCss, /\.support-status-open/);
   assert.match(appCss, /\.support-status-needs-info/);

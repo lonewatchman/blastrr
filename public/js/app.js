@@ -99,6 +99,9 @@ let connectedWallet = null;
         let currentLeaderboardMode = 'DAILY';
         let currentUserProfile = null;
         let adminUserSearchQuery = '';
+        let adminTickets = [];
+        let adminTicketFilter = 'UNREAD';
+        let adminSelectedTicketId = null;
         let tradeCopyGroups = [];
         let tradeCopyGroupsLoadedWallet = null;
         let tradeCopyGroupsPromise = null;
@@ -2245,6 +2248,7 @@ let connectedWallet = null;
         function switchAdminSection(panelId) {
             const sections = [
                 ['admin-operations-panel', 'admin-operations-tab'],
+                ['admin-support-inbox-panel', 'admin-support-tab'],
                 ['admin-creators-panel', 'admin-creators-tab'],
                 ['admin-battlepass-panel', 'admin-battlepass-tab'],
                 ['admin-maintenance-panel', 'admin-maintenance-tab']
@@ -2262,6 +2266,7 @@ let connectedWallet = null;
                 loadAdminCreatorApplications();
                 loadAdminPromoManagement();
             }
+            if (panelId === 'admin-support-inbox-panel') loadAdminTickets();
             if (panelId === 'admin-battlepass-panel') loadAdminBattlePass();
             if (panelId === 'admin-maintenance-panel') loadAdminMaintenanceSettings();
         }
@@ -4951,11 +4956,13 @@ let connectedWallet = null;
             feed.onclick = event => {
                 const button = event.target.closest('[data-admin-ops-open]');
                 if (!button) return;
-                const targetId = button.dataset.adminOpsOpen === 'tickets'
-                    ? 'admin-ticket-list'
-                    : button.dataset.adminOpsOpen === 'reviews'
-                        ? 'admin-review-list'
-                        : 'admin-payout-queue';
+                if (button.dataset.adminOpsOpen === 'tickets') {
+                    switchAdminSection('admin-support-inbox-panel');
+                    return;
+                }
+                const targetId = button.dataset.adminOpsOpen === 'reviews'
+                    ? 'admin-review-list'
+                    : 'admin-payout-queue';
                 document.getElementById(targetId)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
             };
         }
@@ -4989,13 +4996,8 @@ let connectedWallet = null;
                 const verifiedPurchases = Number(metrics.verified_purchases || 0);
                 const unpricedPurchases = Number(metrics.unpriced_legacy_purchases || 0);
                 const salesTotal = Number(metrics.sales_stablecoins_usd ?? metrics.sales_usdt ?? 0);
-                const salesValueElement = document.getElementById('admin-sales-total');
-                if (salesValueElement) {
-                    salesValueElement.textContent = verifiedPurchases > 0 && unpricedPurchases === verifiedPurchases && salesTotal === 0
-                        ? 'Unavailable'
-                        : `$${salesTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-                }
-                setText('admin-sales-count', `${verifiedPurchases.toLocaleString()} verified purchases`);
+                setText('admin-verified-sales-count', verifiedPurchases.toLocaleString());
+                setText('admin-sales-total', `${formatAdminStablecoin(salesTotal, 'USD')} face value recorded`);
                 setText('admin-sales-breakdown', `${formatAdminStablecoin(metrics.sales_usdt, 'USDT')} · ${formatAdminStablecoin(metrics.sales_usdc, 'USDC')}`);
                 setText('admin-paid-out-total', formatAdminStablecoinTotals(metrics.paid_withdrawal_usdt, metrics.paid_withdrawal_usdc));
                 setText('admin-paid-out-count', `${Number(metrics.paid_withdrawals || 0).toLocaleString()} payouts marked paid`);
@@ -5057,6 +5059,7 @@ let connectedWallet = null;
                 if (currentWalletIsAdmin && dashboardAuthenticated &&
                     document.getElementById('adminView')?.classList.contains('active')) {
                     loadAdminOperationsDashboard();
+                    if (document.getElementById('admin-support-inbox-panel')?.hidden === false) loadAdminTickets();
                 }
             }, 15000);
         }
@@ -5197,30 +5200,42 @@ let connectedWallet = null;
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.error || 'Unable to load support tickets.');
                 if (!data.tickets?.length) {
-                    container.innerHTML = '<p class="account-chart-empty">No open support tickets.</p>';
+                    container.innerHTML = '<p class="account-chart-empty">No unassigned or assigned-to-you support tickets.</p>';
                     return;
                 }
-                container.innerHTML = data.tickets.map(ticket => `
-                    <article class="support-ticket-card" data-staff-ticket-id="${escapeHTML(ticket.id)}">
-                        <div class="support-ticket-heading">
-                            <h3>${escapeHTML(ticket.subject)}</h3>
-                            <span class="support-status ${supportStatusClass(ticket.status)}">${supportStatusLabel(ticket.status)}</span>
-                        </div>
-                        <p class="support-ticket-meta">
-                            ${escapeHTML(ticket.username || 'Trader')} · <code>${escapeHTML(ticket.wallet_address)}</code><br>
-                            ${ticket.account_id ? `${escapeHTML(ticket.plan_name || 'Account')} · ${escapeHTML(ticket.account_id)}` : 'General support'} · Created ${escapeHTML(new Date(ticket.created_at).toLocaleString())}
-                        </p>
-                        ${renderSupportMessages(ticket.messages || [])}
-                        <div class="support-ticket-actions">
-                            <label for="staff-ticket-reply-${escapeHTML(ticket.id)}">Reply</label>
-                            <textarea id="staff-ticket-reply-${escapeHTML(ticket.id)}" maxlength="5000" rows="4" placeholder="Write a response or ask for the information needed to resolve this ticket."></textarea>
-                            <div class="support-ticket-buttons">
-                                <button class="btn-wallet" type="button" data-staff-ticket-action="REPLY">Send reply</button>
-                                <button class="btn-sell" type="button" data-staff-ticket-action="CLOSE">Close ticket</button>
+                container.innerHTML = data.tickets.map(ticket => {
+                    const assignedToMe = ticket.assigned_staff_wallet && (
+                        connectedWalletType === 'SOLANA'
+                            ? ticket.assigned_staff_wallet === connectedWallet
+                            : ticket.assigned_staff_wallet.toLowerCase() === String(connectedWallet || '').toLowerCase()
+                    );
+                    return `
+                        <article class="support-ticket-card" data-staff-ticket-id="${escapeHTML(ticket.id)}">
+                            <div class="support-ticket-heading">
+                                <h3>${escapeHTML(ticket.subject)}</h3>
+                                <span class="support-status ${supportStatusClass(ticket.status)}">${supportStatusLabel(ticket.status)}</span>
                             </div>
-                        </div>
-                    </article>
-                `).join('');
+                            <p class="support-ticket-meta">
+                                ${escapeHTML(ticket.username || 'Trader')} · <code>${escapeHTML(ticket.wallet_address)}</code><br>
+                                ${ticket.account_id ? `${escapeHTML(ticket.plan_name || 'Account')} · ${escapeHTML(ticket.account_id)}` : 'General support'} · Created ${escapeHTML(new Date(ticket.created_at).toLocaleString())}
+                            </p>
+                            ${assignedToMe
+                                ? '<p class="admin-inbox-assignment">Assigned to you</p>'
+                                : '<div class="support-ticket-buttons"><button class="btn-wallet" type="button" data-staff-ticket-action="ACCEPT">Accept ticket</button></div>'}
+                            ${renderSupportMessages(ticket.messages || [])}
+                            ${assignedToMe ? `
+                                <div class="support-ticket-actions">
+                                    <label for="staff-ticket-reply-${escapeHTML(ticket.id)}">Reply</label>
+                                    <textarea id="staff-ticket-reply-${escapeHTML(ticket.id)}" maxlength="5000" rows="4" placeholder="Write a response or ask for the information needed to resolve this ticket."></textarea>
+                                    <div class="support-ticket-buttons">
+                                        <button class="btn-wallet" type="button" data-staff-ticket-action="REPLY">Send reply</button>
+                                        <button class="btn-sell" type="button" data-staff-ticket-action="CLOSE">Close ticket</button>
+                                    </div>
+                                </div>
+                            ` : ''}
+                        </article>
+                    `;
+                }).join('');
                 container.onclick = event => {
                     const button = event.target.closest('[data-staff-ticket-action]');
                     const card = button?.closest('[data-staff-ticket-id]');
@@ -5237,7 +5252,8 @@ let connectedWallet = null;
             if (action === 'REPLY' && !message) return alert('Write a reply before sending it.');
             if (action === 'CLOSE' && !confirm('Close this support ticket?')) return;
             try {
-                const response = await walletFetch('/api/staff/tickets/action', {
+                const endpoint = action === 'ACCEPT' ? '/api/staff/tickets/accept' : '/api/staff/tickets/action';
+                const response = await walletFetch(endpoint, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ ticket_id: ticketId, action, message })
@@ -5498,7 +5514,7 @@ let connectedWallet = null;
                             ${user.security_locked_at ? `<button class="btn-wallet" data-admin-user-action="CLEAR_IP_SOFT_LOCK" data-admin-user-wallet="${escapeHTML(user.wallet_address)}">Clear IP security lock</button>` : ''}
                         </div>
                         <details data-admin-user-wallet="${escapeHTML(user.wallet_address)}">
-                            <summary>Show account and login security details</summary>
+                            <summary>Show accounts, login security, and financial transactions</summary>
                             <div class="admin-user-accounts">
                                 <p class="account-chart-empty">Expand to load account details...</p>
                             </div>
@@ -5539,6 +5555,7 @@ let connectedWallet = null;
                 const data = await readAdminApiResponse(response, '/api/admin/users/accounts');
                 if (!response.ok) throw new Error(data.error || "Unable to load this user's accounts.");
                 const accounts = data.accounts || [];
+                const financialTransactions = data.financial_transactions || [];
                 const live = accounts.filter(account => account.status === 'ACTIVE');
                 const archived = accounts.filter(account => account.status !== 'ACTIVE');
                 const loginIps = data.login_ips || [];
@@ -5559,6 +5576,52 @@ let connectedWallet = null;
                         </details>
                     </section>
                 `;
+                const transactionRows = financialTransactions.length
+                    ? financialTransactions.map(transaction => {
+                        const typeLabel = transaction.transaction_type === 'PURCHASE'
+                            ? 'Purchase'
+                            : transaction.transaction_type === 'ACCOUNT_WITHDRAWAL'
+                                ? 'Trading withdrawal'
+                                : 'Referral withdrawal';
+                        const amountLabel = transaction.asset === 'FREE'
+                            ? formatAdminStablecoin(0, 'USD') + ' · free'
+                            : transaction.amount == null
+                                ? 'Amount not recorded'
+                                : formatAdminStablecoin(transaction.amount, transaction.asset || 'USDT');
+                        const withdrawalDetails = transaction.transaction_type !== 'PURCHASE'
+                            ? `<small>Gross ${escapeHTML(formatAdminStablecoin(transaction.gross_amount, transaction.asset || 'USDT'))}${transaction.admin_share != null ? ` · Admin share ${escapeHTML(formatAdminStablecoin(transaction.admin_share, transaction.asset || 'USDT'))}` : ''}</small>`
+                            : '';
+                        const explorerUrl = getTransactionExplorerUrl(transaction.chain_id, transaction.tx_hash);
+                        const transactionId = transaction.tx_hash
+                            ? explorerUrl
+                                ? `<a href="${escapeHTML(explorerUrl)}" target="_blank" rel="noopener noreferrer"><code>${escapeHTML(transaction.tx_hash)}</code></a>`
+                                : `<code>${escapeHTML(transaction.tx_hash)}</code>`
+                            : '<span>Not recorded</span>';
+                        const recordId = transaction.transaction_type === 'PURCHASE'
+                            ? ''
+                            : `<small>Request ID: <code>${escapeHTML(transaction.transaction_id || '')}</code></small>`;
+                        return `<tr>
+                            <td>${escapeHTML(new Date(transaction.created_at).toLocaleString())}${transaction.paid_at ? `<small>Paid ${escapeHTML(new Date(transaction.paid_at).toLocaleString())}</small>` : ''}</td>
+                            <td>${escapeHTML(typeLabel)}<small>${escapeHTML(transaction.description || '')}</small></td>
+                            <td>${transaction.asset === 'FREE' ? 'Redemption ID' : 'Transaction ID'}<small>${transactionId}</small>${recordId}</td>
+                            <td>${escapeHTML(amountLabel)}${withdrawalDetails}</td>
+                            <td>${escapeHTML(transaction.status || '')}${Number(transaction.chain_id) > 0 ? `<small>${escapeHTML(getPayoutNetworkLabel(transaction.chain_id))}</small>` : ''}</td>
+                        </tr>`;
+                    }).join('')
+                    : '<tr><td colspan="5" class="account-chart-empty">No purchases or withdrawals recorded.</td></tr>';
+                const financialPanel = `
+                    <section class="admin-user-financial">
+                        <details open>
+                            <summary>Financial transactions · ${financialTransactions.length}</summary>
+                            <div class="table-responsive">
+                                <table class="admin-user-financial-table">
+                                    <thead><tr><th>Date</th><th>Transaction</th><th>Transaction / request ID</th><th>Amount</th><th>Status / network</th></tr></thead>
+                                    <tbody>${transactionRows}</tbody>
+                                </table>
+                            </div>
+                        </details>
+                    </section>
+                `;
                 const renderGroup = (title, items) => `
                     <section class="admin-user-account-group">
                         <h4>${title} (${items.length})</h4>
@@ -5566,8 +5629,8 @@ let connectedWallet = null;
                     </section>
                 `;
                 container.innerHTML = accounts.length
-                    ? `${securityPanel}${renderGroup('Live accounts', live)}${renderGroup('Archived accounts', archived)}`
-                    : `${securityPanel}<p class="account-chart-empty">This user has no accounts.</p>`;
+                    ? `${financialPanel}${securityPanel}${renderGroup('Live accounts', live)}${renderGroup('Archived accounts', archived)}`
+                    : `${financialPanel}${securityPanel}<p class="account-chart-empty">This user has no accounts.</p>`;
                 details.dataset.loaded = 'true';
             } catch (err) {
                 console.error(err);
@@ -5719,50 +5782,167 @@ let connectedWallet = null;
         async function loadAdminTickets() {
             const container = document.getElementById('admin-ticket-list');
             if (!container) return;
+            const draft = document.getElementById(`admin-ticket-reply-${adminSelectedTicketId}`)?.value || '';
             try {
                 const response = await walletFetch('/api/admin/tickets');
                 const data = await readAdminApiResponse(response, '/api/admin/tickets');
                 if (!response.ok) throw new Error(data.error || 'Unable to load support tickets.');
-                if (!data.tickets?.length) {
-                    container.innerHTML = '<p class="account-chart-empty">No support tickets.</p>';
-                    return;
+                adminTickets = data.tickets || [];
+                renderAdminTicketInbox();
+                const replyBox = document.getElementById(`admin-ticket-reply-${adminSelectedTicketId}`);
+                if (replyBox && draft) replyBox.value = draft;
+                const selectedTicket = adminTickets.find(ticket => ticket.id === adminSelectedTicketId);
+                if (document.getElementById('admin-support-inbox-panel')?.hidden === false &&
+                    selectedTicket && Number(selectedTicket.is_unread) === 1) {
+                    await selectAdminTicket(selectedTicket.id);
                 }
-                container.innerHTML = data.tickets.map(ticket => `
-                    <article class="support-ticket-card" data-admin-ticket-id="${escapeHTML(ticket.id)}">
-                        <div class="support-ticket-heading">
-                            <h3>${escapeHTML(ticket.subject)}</h3>
-                            <span class="support-status ${supportStatusClass(ticket.status)}">${supportStatusLabel(ticket.status)}</span>
-                        </div>
-                        <p class="support-ticket-meta">
-                            ${escapeHTML(ticket.username || 'Trader')} · <code>${escapeHTML(ticket.wallet_address)}</code><br>
-                            ${ticket.account_id ? `${escapeHTML(ticket.plan_name || 'Account')} · ${escapeHTML(ticket.account_id)}` : 'General support'} · Created ${escapeHTML(new Date(ticket.created_at).toLocaleString())}
-                        </p>
-                        ${renderSupportMessages(ticket.messages || [])}
-                        ${ticket.status !== 'CLOSED' ? `
-                            <div class="support-ticket-actions">
-                                <label for="admin-ticket-reply-${escapeHTML(ticket.id)}">Reply (sending a reply marks “Needs your info”)</label>
-                                <textarea id="admin-ticket-reply-${escapeHTML(ticket.id)}" maxlength="5000" rows="4" placeholder="Write a clear response or request the details needed to resolve this issue."></textarea>
-                                <div class="support-ticket-buttons">
-                                    <button class="btn-wallet" data-admin-ticket-action="REPLY">Send reply</button>
-                                    <button class="btn-sell" data-admin-ticket-action="CLOSE">Close ticket</button>
-                                </div>
-                            </div>
-                        ` : ''}
-                    </article>
-                `).join('');
-                container.onclick = event => {
-                    const button = event.target.closest('[data-admin-ticket-action]');
-                    const card = button?.closest('[data-admin-ticket-id]');
-                    if (button && card) processAdminTicket(card.dataset.adminTicketId, button.dataset.adminTicketAction, card);
-                };
             } catch (err) {
                 console.error(err);
                 container.innerHTML = `<p class="support-feedback">${escapeHTML(err.message)}</p>`;
             }
         }
 
-        async function processAdminTicket(ticketId, action, card) {
-            const message = card.querySelector('textarea')?.value.trim() || '';
+        function setAdminTicketFilter(filter) {
+            if (!['UNREAD', 'READ', 'CLOSED'].includes(filter)) return;
+            adminTicketFilter = filter;
+            adminSelectedTicketId = null;
+            renderAdminTicketInbox();
+        }
+
+        function renderAdminTicketInbox() {
+            const container = document.getElementById('admin-ticket-list');
+            const conversation = document.getElementById('admin-ticket-main');
+            if (!container || !conversation) return;
+            const isUnread = ticket => Number(ticket.is_unread) === 1;
+            const activeTickets = adminTickets.filter(ticket => ticket.status !== 'CLOSED');
+            const unreadCount = activeTickets.filter(isUnread).length;
+            const readCount = activeTickets.filter(ticket => !isUnread(ticket)).length;
+            const closedCount = adminTickets.filter(ticket => ticket.status === 'CLOSED').length;
+            const counts = {
+                UNREAD: document.getElementById('admin-ticket-unread-count'),
+                READ: document.getElementById('admin-ticket-read-count'),
+                CLOSED: document.getElementById('admin-ticket-closed-count')
+            };
+            const values = { UNREAD: unreadCount, READ: readCount, CLOSED: closedCount };
+            Object.keys(counts).forEach(filter => {
+                if (counts[filter]) counts[filter].textContent = String(values[filter]);
+            });
+            document.querySelectorAll('[data-admin-ticket-filter]').forEach(button => {
+                const selected = button.dataset.adminTicketFilter === adminTicketFilter;
+                button.classList.toggle('active', selected);
+                button.setAttribute('aria-pressed', String(selected));
+            });
+            const badge = document.getElementById('admin-support-tab-badge');
+            if (badge) {
+                badge.textContent = String(unreadCount);
+                badge.hidden = unreadCount === 0;
+            }
+
+            const tickets = adminTickets.filter(ticket => {
+                if (adminTicketFilter === 'CLOSED') return ticket.status === 'CLOSED';
+                if (ticket.status === 'CLOSED') return false;
+                return adminTicketFilter === 'UNREAD' ? isUnread(ticket) : !isUnread(ticket);
+            });
+            if (!adminTickets.some(ticket => ticket.id === adminSelectedTicketId)) {
+                adminSelectedTicketId = tickets[0]?.id || null;
+            }
+            const groupedUsers = new Map();
+            tickets.forEach(ticket => {
+                const walletAddress = String(ticket.wallet_address || '');
+                const walletKey = walletAddress.startsWith('0x') ? walletAddress.toLowerCase() : walletAddress;
+                if (!groupedUsers.has(walletKey)) groupedUsers.set(walletKey, []);
+                groupedUsers.get(walletKey).push(ticket);
+            });
+            container.innerHTML = tickets.length ? [...groupedUsers.entries()].map(([wallet, userTickets]) => {
+                const userName = userTickets[0].username || 'Trader';
+                const isOpen = userTickets.some(ticket => ticket.id === adminSelectedTicketId);
+                return `
+                    <details class="admin-inbox-user" ${isOpen ? 'open' : ''}>
+                        <summary>
+                            <span class="admin-inbox-user-name">${escapeHTML(userName)} <span class="admin-inbox-user-meta">(${userTickets.length})</span></span>
+                            <span class="admin-inbox-user-meta">${escapeHTML(wallet)}</span>
+                        </summary>
+                        <div class="admin-inbox-ticket-list">
+                            ${userTickets.map(ticket => `
+                                <button type="button" class="admin-inbox-ticket ${ticket.id === adminSelectedTicketId ? 'active' : ''}" data-admin-ticket-select="${escapeHTML(ticket.id)}" aria-pressed="${ticket.id === adminSelectedTicketId}">
+                                    <span class="admin-inbox-ticket-subject">${isUnread(ticket) ? '<span class="admin-inbox-unread-dot" aria-label="Unread"></span> ' : ''}${escapeHTML(ticket.subject)}</span>
+                                    <span class="admin-inbox-ticket-date">${escapeHTML(new Date(ticket.updated_at || ticket.created_at).toLocaleDateString())}</span>
+                                    <span class="admin-inbox-ticket-status">${escapeHTML(supportStatusLabel(ticket.status))}</span>
+                                </button>
+                            `).join('')}
+                        </div>
+                    </details>`;
+            }).join('') : `<p class="admin-inbox-empty">No ${adminTicketFilter.toLowerCase()} conversations.</p>`;
+
+            const selectedTicket = adminTickets.find(ticket => ticket.id === adminSelectedTicketId);
+            if (!selectedTicket) {
+                conversation.innerHTML = '<p class="admin-inbox-empty">Select a conversation to view its messages.</p>';
+            } else {
+                conversation.innerHTML = `
+                    <header class="admin-inbox-conversation-header">
+                        <div>
+                            <h3>${escapeHTML(selectedTicket.subject)}</h3>
+                            <p class="admin-inbox-conversation-meta">
+                                ${escapeHTML(selectedTicket.username || 'Trader')} · <code>${escapeHTML(selectedTicket.wallet_address)}</code><br>
+                                ${selectedTicket.account_id ? `${escapeHTML(selectedTicket.plan_name || 'Account')} · ${escapeHTML(selectedTicket.account_id)}` : 'General support'} · Created ${escapeHTML(new Date(selectedTicket.created_at).toLocaleString())}<br>
+                                ${selectedTicket.assigned_staff_wallet ? `Assigned to support wallet <code>${escapeHTML(selectedTicket.assigned_staff_wallet)}</code>` : 'Unassigned'}
+                            </p>
+                        </div>
+                        <span class="support-status ${supportStatusClass(selectedTicket.status)}">${supportStatusLabel(selectedTicket.status)}</span>
+                    </header>
+                    <div class="admin-inbox-thread">${renderSupportMessages(selectedTicket.messages || [])}</div>
+                    ${selectedTicket.status !== 'CLOSED' ? `
+                        <div class="support-ticket-actions">
+                            <label for="admin-ticket-reply-${escapeHTML(selectedTicket.id)}">Reply (sending a reply marks “Needs your info”)</label>
+                            <textarea id="admin-ticket-reply-${escapeHTML(selectedTicket.id)}" maxlength="5000" rows="4" placeholder="Write a clear response or request the details needed to resolve this issue."></textarea>
+                            <div class="support-ticket-buttons">
+                                <button class="btn-wallet" type="button" data-admin-ticket-action="REPLY">Send reply</button>
+                                <button class="btn-sell" type="button" data-admin-ticket-action="CLOSE">Close ticket</button>
+                            </div>
+                        </div>
+                    ` : ''}
+                    <p class="support-feedback admin-inbox-feedback" role="status" aria-live="polite"></p>`;
+            }
+
+            container.onclick = event => {
+                const button = event.target.closest('[data-admin-ticket-select]');
+                if (button) selectAdminTicket(button.dataset.adminTicketSelect);
+            };
+            conversation.onclick = event => {
+                const button = event.target.closest('[data-admin-ticket-action]');
+                if (button && selectedTicket) processAdminTicket(selectedTicket.id, button.dataset.adminTicketAction);
+            };
+        }
+
+        async function selectAdminTicket(ticketId) {
+            const draft = adminSelectedTicketId === ticketId
+                ? document.getElementById(`admin-ticket-reply-${ticketId}`)?.value || ''
+                : '';
+            adminSelectedTicketId = ticketId;
+            renderAdminTicketInbox();
+            const replyBox = document.getElementById(`admin-ticket-reply-${ticketId}`);
+            if (replyBox && draft) replyBox.value = draft;
+            const ticket = adminTickets.find(item => item.id === ticketId);
+            if (!ticket || Number(ticket.is_unread) !== 1) return;
+            try {
+                const response = await walletFetch('/api/admin/tickets/read', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ticket_id: ticketId })
+                });
+                const data = await readAdminApiResponse(response, '/api/admin/tickets/read');
+                if (!response.ok) throw new Error(data.error || 'Unable to mark ticket as read.');
+                ticket.is_unread = 0;
+                renderAdminTicketInbox();
+            } catch (err) {
+                console.error(err);
+                const feedback = document.querySelector('.admin-inbox-feedback');
+                if (feedback) feedback.textContent = err.message;
+            }
+        }
+
+        async function processAdminTicket(ticketId, action) {
+            const message = document.getElementById(`admin-ticket-reply-${ticketId}`)?.value.trim() || '';
             if (action === 'REPLY' && !message) {
                 alert('Write a reply before sending it.');
                 return;
@@ -5777,6 +5957,11 @@ let connectedWallet = null;
                 });
                 const data = await readAdminApiResponse(response, '/api/admin/tickets/action');
                 if (!response.ok) throw new Error(data.error || 'Unable to update support ticket.');
+                if (action === 'REPLY') {
+                    const replyBox = document.getElementById(`admin-ticket-reply-${ticketId}`);
+                    if (replyBox) replyBox.value = '';
+                }
+                if (action === 'CLOSE') adminTicketFilter = 'CLOSED';
                 await loadAdminTickets();
             } catch (err) {
                 console.error(err);
@@ -6194,15 +6379,19 @@ let connectedWallet = null;
         }
 
         async function processWithdrawal(withdrawalId, action, type) {
+            const payoutTxHash = action === 'APPROVE'
+                ? window.prompt('Enter the payout transaction ID (EVM transaction hash or Solana signature):')?.trim()
+                : '';
+            if (action === 'APPROVE' && !payoutTxHash) return;
             if (!confirm(action === 'APPROVE'
-                ? `Approve this payout? The gross amount will be deducted from the account. Transfer 90% to the user and retain 10% for admin.`
+                ? `Confirm the payout was sent with transaction ID ${payoutTxHash}? The gross amount will be deducted from the account and 90% paid to the user.`
                 : `Reject this withdrawal request? No account funds have been deducted.`)) return;
             try {
                 const authorization = await signedTradeAuthorization();
                 const res = await fetch('/api/admin/withdrawals/action', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ...authorization, withdrawal_id: withdrawalId, action, type })
+                    body: JSON.stringify({ ...authorization, withdrawal_id: withdrawalId, action, type, payout_tx_hash: payoutTxHash })
                 });
                 const data = await readAdminApiResponse(res, '/api/admin/withdrawals/action');
                 if (data.success) { alert(data.message); loadAdminWithdrawals(); if (adminUserSearchQuery) loadAdminUserSearch(); if (connectedWallet) loadUserAccounts(connectedWallet); }

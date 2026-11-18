@@ -323,6 +323,7 @@ function initTables() {
       admin_share REAL,
       payout_chain_id INTEGER,
       payout_asset TEXT NOT NULL DEFAULT 'USDT',
+      payout_tx_hash TEXT,
       funds_deducted INTEGER DEFAULT 0,
       paid_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -336,6 +337,7 @@ function initTables() {
       status TEXT DEFAULT 'PENDING',
       payout_chain_id INTEGER,
       payout_asset TEXT NOT NULL DEFAULT 'USDT',
+      payout_tx_hash TEXT,
       paid_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
@@ -486,6 +488,8 @@ function initTables() {
       account_id TEXT,
       subject TEXT NOT NULL,
       status TEXT NOT NULL DEFAULT 'OPEN',
+      assigned_staff_wallet TEXT,
+      assigned_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(account_id) REFERENCES accounts(id)
@@ -501,6 +505,43 @@ function initTables() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(ticket_id) REFERENCES support_tickets(id)
     )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS support_ticket_admin_reads (
+      ticket_id TEXT NOT NULL,
+      admin_wallet TEXT NOT NULL,
+      last_read_message_id INTEGER NOT NULL DEFAULT 0,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(ticket_id, admin_wallet),
+      FOREIGN KEY(ticket_id) REFERENCES support_tickets(id)
+    )`);
+
+    db.all('PRAGMA table_info(support_tickets)', (err, columns) => {
+      if (err) {
+        console.error('Unable to inspect support ticket assignment schema', err.message);
+        return;
+      }
+      const existing = new Set(columns.map(column => column.name));
+      const additions = [
+        ['assigned_staff_wallet', 'TEXT'],
+        ['assigned_at', 'DATETIME']
+      ];
+      const addNext = index => {
+        if (index >= additions.length) {
+          db.run('CREATE INDEX IF NOT EXISTS idx_support_tickets_assigned_status ON support_tickets(assigned_staff_wallet, status, updated_at DESC)');
+          return;
+        }
+        const [name, type] = additions[index];
+        if (existing.has(name)) return addNext(index + 1);
+        db.run(`ALTER TABLE support_tickets ADD COLUMN ${name} ${type}`, alterErr => {
+          if (alterErr) {
+            console.error(`Unable to add support_tickets.${name}`, alterErr.message);
+            return;
+          }
+          addNext(index + 1);
+        });
+      };
+      addNext(0);
+    });
 
     db.run(`CREATE TABLE IF NOT EXISTS user_reviews (
       account_id TEXT PRIMARY KEY,
@@ -819,7 +860,17 @@ function initTables() {
         ['payer_address', 'TEXT']
       ].filter(([name]) => !existing.has(name));
       const addNextColumn = index => {
-        if (index >= additions.length) return;
+        if (index >= additions.length) {
+          return db.run(
+            `UPDATE purchases
+             SET amount_usdt = 0, payment_asset = 'FREE'
+             WHERE UPPER(COALESCE(payment_asset, '')) = 'FREE'
+                OR substr(LOWER(tx_hash), 1, 5) IN ('free_', 'pass_')`,
+            backfillErr => {
+              if (backfillErr) console.error('Unable to record zero-value promo purchases', backfillErr.message);
+            }
+          );
+        }
         const [name, type] = additions[index];
         db.run(`ALTER TABLE purchases ADD COLUMN ${name} ${type}`, alterErr => {
           if (alterErr) {
@@ -1010,11 +1061,19 @@ function initTables() {
         ['admin_share', 'REAL'],
         ['payout_chain_id', 'INTEGER'],
         ['payout_asset', "TEXT NOT NULL DEFAULT 'USDT'"],
+        ['payout_tx_hash', 'TEXT'],
         ['funds_deducted', 'INTEGER'],
         ['paid_at', 'DATETIME']
       ].filter(([name]) => !existing.has(name));
       const addNext = (index) => {
         if (index >= additions.length) {
+          db.run(
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_withdrawals_payout_tx_hash
+             ON withdrawals(payout_tx_hash) WHERE payout_tx_hash IS NOT NULL`,
+            indexErr => {
+              if (indexErr) console.error('Unable to create unique withdrawal transaction index', indexErr.message);
+            }
+          );
           return db.run(
             `UPDATE withdrawals SET funds_deducted = 1
              WHERE status = 'PENDING' AND funds_deducted IS NULL`,
@@ -1044,10 +1103,19 @@ function initTables() {
       const additions = [
         ['paid_at', 'DATETIME'],
         ['payout_chain_id', 'INTEGER'],
-        ['payout_asset', "TEXT NOT NULL DEFAULT 'USDT'"]
+        ['payout_asset', "TEXT NOT NULL DEFAULT 'USDT'"],
+        ['payout_tx_hash', 'TEXT']
       ].filter(([name]) => !existing.has(name));
       const addNext = index => {
-        if (index >= additions.length) return;
+        if (index >= additions.length) {
+          return db.run(
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_referral_withdrawals_payout_tx_hash
+             ON referral_withdrawals(payout_tx_hash) WHERE payout_tx_hash IS NOT NULL`,
+            indexErr => {
+              if (indexErr) console.error('Unable to create unique referral withdrawal transaction index', indexErr.message);
+            }
+          );
+        }
         const [name, type] = additions[index];
         db.run(`ALTER TABLE referral_withdrawals ADD COLUMN ${name} ${type}`, alterErr => {
           if (alterErr) {
