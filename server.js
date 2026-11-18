@@ -5231,7 +5231,7 @@ app.get('/api/forex/candles', sensitiveLimiter, requireWalletSession, chartLimit
     });
 });
 
-function streamMarketData(req, res, filter = () => true, walletAddress) {
+function streamMarketData(res, filter = () => true, walletAddress) {
   res.set({
     'Content-Type': 'text/event-stream',
     'Cache-Control': 'no-cache, no-transform',
@@ -5263,7 +5263,6 @@ function streamMarketData(req, res, filter = () => true, walletAddress) {
     removeClient();
     if (!res.destroyed && !res.writableEnded) res.end();
   };
-  req.on('close', removeClient);
   res.on('close', removeClient);
 }
 
@@ -5273,12 +5272,12 @@ function disconnectMarketDataStreams(walletAddress) {
   }
 }
 
-app.get('/api/market-data/stream', sensitiveLimiter, requireWalletSession, chartLimiter, requireWalletNotSoftLocked, (req, res) => {
-  streamMarketData(req, res, () => true, req.walletAddress);
+app.get('/api/market-data/stream', requireWalletSession, chartLimiter, requireWalletNotSoftLocked, (req, res) => {
+  streamMarketData(res, () => true, req.walletAddress);
 });
 
-app.get('/api/forex/stream', sensitiveLimiter, requireWalletSession, chartLimiter, requireWalletNotSoftLocked, (req, res) => {
-  streamMarketData(req, res, quote => quote.assetClass === 'FOREX', req.walletAddress);
+app.get('/api/forex/stream', requireWalletSession, chartLimiter, requireWalletNotSoftLocked, (req, res) => {
+  streamMarketData(res, quote => quote.assetClass === 'FOREX', req.walletAddress);
 });
 
 app.use('/api', (req, res) => {
