@@ -7,7 +7,7 @@
     <link rel="icon" type="image/png" href="/favicon.png">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link rel="stylesheet" href="/css/app.css?v=20261118-chart-drawings">
+    <link rel="stylesheet" href="/css/app.css?v=20261118-wallet-selects">
 </head>
 <body class="auth-locked">
     <section id="wallet-login-gate" class="wallet-login-gate" aria-labelledby="wallet-login-title">
@@ -17,14 +17,14 @@
         <p class="wallet-login-copy">Sign a message with your wallet to unlock your trading dashboard.</p>
         <div class="form-group">
             <label for="wallet-login-type">Wallet network</label>
-            <select id="wallet-login-type">
+            <select id="wallet-login-type" class="wallet-choice-select">
                 <option value="EVM">EVM wallet</option>
                 <option value="SOLANA">Solana wallet</option>
             </select>
         </div>
         <div class="form-group" id="wallet-login-solana-group" hidden>
             <label for="wallet-login-solana-provider">Solana wallet</label>
-            <select id="wallet-login-solana-provider">
+            <select id="wallet-login-solana-provider" class="wallet-choice-select">
                 <option value="phantom">Phantom</option>
                 <option value="solflare">Solflare</option>
             </select>
@@ -128,13 +128,13 @@
                     <p class="wallet-menu-heading">Connected accounts</p>
                     <div id="wallet-menu-accounts" class="wallet-menu-accounts"></div>
                     <label class="wallet-menu-heading" for="wallet-add-type">Add wallet</label>
-                    <select id="wallet-add-type">
+                    <select id="wallet-add-type" class="wallet-choice-select">
                         <option value="EVM">EVM wallet</option>
                         <option value="SOLANA">Solana wallet</option>
                     </select>
                     <div class="form-group" id="wallet-add-solana-group" hidden>
                         <label for="wallet-add-solana-provider">Solana wallet</label>
-                        <select id="wallet-add-solana-provider">
+                        <select id="wallet-add-solana-provider" class="wallet-choice-select">
                             <option value="phantom">Phantom</option>
                             <option value="solflare">Solflare</option>
                         </select>

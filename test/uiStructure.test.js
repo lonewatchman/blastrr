@@ -407,6 +407,20 @@ test('wallet switcher menu lists connected accounts before add and logout action
   assert.match(appCss, /#wallet-menu \.wallet-menu-logout:active[\s\S]*?box-shadow: 0 0 12px rgba\(248, 113, 113, 0\.2\)/);
 });
 
+test('wallet type selectors use consistent accessible dark dropdown styling', () => {
+  for (const id of [
+    'wallet-login-type',
+    'wallet-login-solana-provider',
+    'wallet-add-type',
+    'wallet-add-solana-provider'
+  ]) {
+    assert.match(appHtml, new RegExp(`<select id="${id}" class="wallet-choice-select">`));
+  }
+  assert.match(appCss, /\.wallet-choice-select\s*\{[^}]*appearance: none;[^}]*border-radius: 11px/);
+  assert.match(appCss, /\.wallet-choice-select:focus-visible\s*\{[^}]*outline: 2px solid/);
+  assert.match(appCss, /\.wallet-choice-select option\s*\{[^}]*background: #101214/);
+});
+
 test('BlastrrPass content and reward fields wrap without mobile overflow', () => {
   assert.match(appCss, /\.battlepass-task-heading > strong \{[^}]*overflow-wrap: anywhere/);
   assert.match(appCss, /\.battlepass-task-copy p \{[^}]*overflow-wrap: anywhere/);

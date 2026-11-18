@@ -655,8 +655,11 @@ function requireSupportStaff(req, res, next) {
 }
 
 function requireAdminSession(req, res, next) {
+  const walletPredicate = req.walletType === 'SOLANA'
+    ? 'wallet_address = ?'
+    : 'LOWER(wallet_address) = LOWER(?)';
   db.get(
-    "SELECT role FROM admins WHERE LOWER(wallet_address) = LOWER(?)",
+    `SELECT role FROM admins WHERE ${walletPredicate}`,
     [req.walletAddress],
     (err, admin) => {
       if (err) return res.status(500).json({ error: 'Unable to verify administrator role.' });
@@ -1315,12 +1318,15 @@ function refreshAccountLock(account, callback) {
 }
 
 function requireAdminWallet(req, res, next) {
-  const wallet = req.body?.wallet_address;
-  if (typeof wallet !== 'string' || !ethers.isAddress(wallet)) {
-    return res.status(401).json({ error: 'Administrator wallet is required.' });
+  const wallet = req.walletAddress;
+  if (!normalizeWalletAddress(wallet, req.walletType)) {
+    return res.status(401).json({ error: 'A signed administrator wallet is required.' });
   }
+  const walletPredicate = req.walletType === 'SOLANA'
+    ? 'wallet_address = ?'
+    : 'LOWER(wallet_address) = LOWER(?)';
   db.get(
-    "SELECT role FROM admins WHERE LOWER(wallet_address) = LOWER(?)",
+    `SELECT role FROM admins WHERE ${walletPredicate}`,
     [wallet],
     (err, admin) => {
       if (err) return res.status(500).json({ error: 'Unable to verify administrator role.' });
@@ -2160,7 +2166,10 @@ app.post('/api/battlepass/rewards/claim', sensitiveLimiter, requireWalletSession
 
 app.get('/api/auth/role', requireWalletSession, (req, res) => {
   const wallet = req.walletAddress;
-  db.get("SELECT role FROM admins WHERE LOWER(wallet_address) = LOWER(?)", [wallet], (err, admin) => {
+  const adminWalletPredicate = req.walletType === 'SOLANA'
+    ? 'wallet_address = ?'
+    : 'LOWER(wallet_address) = LOWER(?)';
+  db.get(`SELECT role FROM admins WHERE ${adminWalletPredicate}`, [wallet], (err, admin) => {
     if (err) return res.status(500).json({ error: 'Unable to load wallet roles.' });
     const staffWalletPredicate = req.walletType === 'SOLANA'
       ? 'wallet_address = ?'

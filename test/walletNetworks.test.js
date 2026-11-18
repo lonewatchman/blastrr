@@ -17,6 +17,20 @@ test('wallet sessions preserve EVM and Solana identities and require the matchin
   assert.match(appJs, /async function signedTradeAuthorization\(\)[\s\S]*?connectedWalletType === 'SOLANA'[\s\S]*?provider\.signMessage/);
 });
 
+test('treasury wallets are seeded as superadmins and Solana admins can use signed admin routes', () => {
+  for (const address of [
+    '0x9c19edeba86b214db5b3d21da9416d5e5568365b',
+    'A3AVrbzCYzqKEkBR7pDQGYgnAbmBF9qNMQDX84QpuRZx'
+  ]) {
+    assert.ok(databaseJs.includes(address), `missing treasury superadmin seed ${address}`);
+  }
+  assert.match(databaseJs, /UPDATE admins SET role = 'SUPER_ADMIN' WHERE \$\{walletPredicate\}/);
+  assert.match(databaseJs, /INSERT INTO admins \(wallet_address, role\)[\s\S]*?WHERE NOT EXISTS \(SELECT 1 FROM admins WHERE \$\{walletPredicate\}\)/);
+  assert.match(serverJs, /function requireAdminWallet\(req, res, next\)[\s\S]*?normalizeWalletAddress\(wallet, req\.walletType\)[\s\S]*?req\.walletType === 'SOLANA'[\s\S]*?wallet_address = \?/);
+  assert.match(serverJs, /function requireAdminSession\(req, res, next\)[\s\S]*?req\.walletType === 'SOLANA'[\s\S]*?wallet_address = \?/);
+  assert.match(serverJs, /const adminWalletPredicate = req\.walletType === 'SOLANA'[\s\S]*?SELECT role FROM admins WHERE \$\{adminWalletPredicate\}/);
+});
+
 test('purchases enforce matching wallet networks and verify both Solana stablecoins', () => {
   assert.match(serverJs, /if \(req\.walletType !== 'SOLANA'[\s\S]*?normalizeWalletAddress\(paymentWallet, 'SOLANA'\) !== wallet_address/);
   assert.match(serverJs, /if \(req\.walletType !== 'EVM'\)[\s\S]*?EVM payments are available only to the active EVM wallet/);

@@ -165,6 +165,22 @@ function initTables() {
       role TEXT DEFAULT 'SUPER_ADMIN',
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
+    const treasurySuperAdmins = [
+      '0x9c19edeba86b214db5b3d21da9416d5e5568365b',
+      'A3AVrbzCYzqKEkBR7pDQGYgnAbmBF9qNMQDX84QpuRZx'
+    ];
+    treasurySuperAdmins.forEach(walletAddress => {
+      const walletPredicate = walletAddress.startsWith('0x')
+        ? 'LOWER(wallet_address) = LOWER(?)'
+        : 'wallet_address = ?';
+      db.run(`UPDATE admins SET role = 'SUPER_ADMIN' WHERE ${walletPredicate}`, [walletAddress]);
+      db.run(
+        `INSERT INTO admins (wallet_address, role)
+         SELECT ?, 'SUPER_ADMIN'
+         WHERE NOT EXISTS (SELECT 1 FROM admins WHERE ${walletPredicate})`,
+        [walletAddress, walletAddress]
+      );
+    });
 
     db.run(`CREATE TABLE IF NOT EXISTS support_staff (
       wallet_address TEXT PRIMARY KEY,

@@ -1884,6 +1884,76 @@
         .admin-hedging-alert code { color: #e5e7eb; overflow-wrap: anywhere; }
         .admin-hedging-alert button { flex: 0 0 auto; }
 
+        .wallet-login-gate > .form-group {
+            width: min(100%, 360px);
+            margin: 18px 0 0;
+            text-align: left;
+        }
+        .wallet-login-gate > .form-group label,
+        .wallet-menu-panel > .wallet-menu-heading {
+            margin: 0 0 8px;
+            color: #aeb4bc;
+            font-size: 10px;
+            font-weight: 750;
+            letter-spacing: 0.11em;
+        }
+        .wallet-choice-select {
+            display: block;
+            width: 100%;
+            min-height: 46px;
+            padding: 0 42px 0 14px;
+            appearance: none;
+            -webkit-appearance: none;
+            border: 1px solid rgba(180, 190, 200, 0.2);
+            border-radius: 11px;
+            background-color: #0c0e10;
+            background-image:
+                linear-gradient(45deg, transparent 50%, #aeb4bc 50%),
+                linear-gradient(135deg, #aeb4bc 50%, transparent 50%),
+                linear-gradient(180deg, rgba(255, 255, 255, 0.025), transparent 70%);
+            background-position:
+                calc(100% - 17px) 50%,
+                calc(100% - 12px) 50%,
+                0 0;
+            background-repeat: no-repeat;
+            background-size: 5px 5px, 5px 5px, 100% 100%;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+            color: #f3f4f6;
+            color-scheme: dark;
+            font: inherit;
+            font-size: 13px;
+            font-weight: 650;
+            text-align: left;
+            cursor: pointer;
+            transition: border-color 140ms ease, box-shadow 140ms ease, background-color 140ms ease;
+        }
+        .wallet-choice-select:hover:not(:disabled) {
+            border-color: rgba(200, 210, 220, 0.38);
+            background-color: #111416;
+        }
+        .wallet-choice-select:focus-visible {
+            border-color: rgba(200, 210, 220, 0.5);
+            outline: 2px solid rgba(200, 210, 220, 0.2);
+            outline-offset: 2px;
+            box-shadow: 0 0 0 4px rgba(180, 190, 200, 0.06);
+        }
+        .wallet-choice-select option {
+            background: #101214;
+            color: #f3f4f6;
+        }
+        .wallet-choice-select:disabled {
+            cursor: not-allowed;
+            opacity: 0.58;
+        }
+        .wallet-login-gate .wallet-choice-select { min-height: 48px; }
+        .wallet-menu-panel > .wallet-choice-select { min-height: 42px; margin: 0 0 8px; }
+        .wallet-menu-panel .form-group { margin: 8px 0 0; }
+        .wallet-menu-panel .form-group label { margin-bottom: 6px; }
+        @media (max-width: 480px) {
+            .wallet-login-gate { padding: 20px; }
+            .wallet-login-gate > .form-group { margin-top: 15px; }
+        }
+
         .view-panel[hidden] { display: none !important; }
         body.support-staff-mode #nav-menu > :not(#support-nav-item) { display: none !important; }
         body.support-staff-mode main > .view-panel:not(#supportStaffView) { display: none !important; }

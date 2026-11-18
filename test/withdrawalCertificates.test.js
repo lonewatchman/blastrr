@@ -50,7 +50,7 @@ test('profile achievements list approved certificates and download branded JPGs'
 });
 
 test('leaderboard exclusion checkbox keeps native dimensions and styling', () => {
-  assert.match(appHtml, /href="\/css\/app\.css\?v=20261118-chart-drawings"/);
+  assert.match(appHtml, /href="\/css\/app\.css\?v=20261118-wallet-selects"/);
   assert.match(appCss, /\.leaderboard-toolbar input:not\(\[type="checkbox"\]\)/);
   assert.match(appCss, /\.leaderboard-toolbar \.leaderboard-exclude-control input\[type="checkbox"\]/);
   assert.match(appCss, /\.leaderboard-toolbar input:not\(\[type="checkbox"\]\) \{/);
