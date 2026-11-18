@@ -169,6 +169,18 @@ let connectedWallet = null;
             })[character]);
         }
 
+        async function readApiJson(response, endpoint) {
+            const body = await response.text();
+            try {
+                return JSON.parse(body);
+            } catch {
+                const detail = body.trimStart().startsWith('<')
+                    ? 'The server returned an HTML page instead of API JSON. Check that this site is connected to the running Blastrr API server and deploy the latest server code.'
+                    : 'The server returned an invalid API response.';
+                throw new Error(`${endpoint} failed (HTTP ${response.status}). ${detail}`);
+            }
+        }
+
         function setTradeFeedback(message) {
             const feedback = document.getElementById('trade-feedback');
             if (feedback) feedback.textContent = message || '';
@@ -5986,7 +5998,7 @@ let connectedWallet = null;
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ wallet_address: connectedWallet })
             });
-            const challengeData = await challengeResponse.json();
+            const challengeData = await readApiJson(challengeResponse, '/api/auth/trade-challenge');
             if (!challengeResponse.ok) throw new Error(challengeData.error || 'Unable to request wallet authorization.');
 
             const encodedMessage = `0x${Array.from(new TextEncoder().encode(challengeData.challenge), byte => byte.toString(16).padStart(2, '0')).join('')}`;
@@ -6020,7 +6032,7 @@ let connectedWallet = null;
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(authorization)
                 });
-                const data = await response.json();
+                const data = await readApiJson(response, '/api/auth/wallet-session');
                 if (!response.ok) throw new Error(data.error || 'Unable to establish a wallet session.');
                 walletSessionToken = data.token;
                 walletSessionOwner = owner;
@@ -6079,7 +6091,7 @@ let connectedWallet = null;
                 },
                 body: JSON.stringify(authorization)
             });
-            const data = await response.json();
+            const data = await readApiJson(response, '/api/auth/wallet-session/reauthorize');
             if (!response.ok) throw new Error(data.error || 'Unable to reauthorize this wallet session.');
             setWalletSoftLockState(data.wallet_soft_locked === true);
             return data;
