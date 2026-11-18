@@ -567,6 +567,20 @@
         .admin-section-tab { border: 1px solid transparent; border-radius: 8px; padding: 9px 14px; background: transparent; color: #cbd5e1; cursor: pointer; font: inherit; font-weight: 700; }
         .admin-section-tab:hover, .admin-section-tab:focus-visible, .admin-section-tab.active { border-color: rgba(168, 85, 247, 0.78); background: transparent; color: #fff; box-shadow: 0 0 12px rgba(168, 85, 247, 0.38), inset 0 0 8px rgba(168, 85, 247, 0.06); outline: none; }
         .admin-section-panel[hidden] { display: none !important; }
+        .admin-console .admin-section-tabs { padding: 8px; border: 1px solid rgba(180, 190, 200, 0.12); border-radius: 12px; background: rgba(8, 9, 10, 0.72); }
+        .admin-console .admin-section-tab { min-height: 42px; border-color: rgba(180, 190, 200, 0.12); background: rgba(20, 17, 31, 0.5); }
+        .admin-console .admin-section-tab.active { border-color: rgba(168, 85, 247, 0.78); background: rgba(100, 54, 153, 0.23); }
+        .admin-quick-actions { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px; margin: 0 0 20px; }
+        .admin-quick-action-group { display: grid; align-content: start; gap: 8px; padding: 14px; border: 1px solid rgba(180, 190, 200, 0.13); border-radius: 12px; background: rgba(12, 13, 18, 0.76); }
+        .admin-quick-action-group h2 { margin: 0 0 2px; color: #c4b5fd; font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; }
+        .admin-quick-action { display: grid; gap: 3px; padding: 10px 11px; border: 1px solid rgba(180, 190, 200, 0.1); border-radius: 9px; color: #f3f4f6; font-size: 13px; font-weight: 700; text-decoration: none; transition: border-color 140ms ease, background 140ms ease; }
+        .admin-quick-action span { color: #9ca3af; font-size: 11px; font-weight: 400; line-height: 1.4; }
+        .admin-quick-action:hover, .admin-quick-action:focus-visible { border-color: rgba(168, 85, 247, 0.7); background: rgba(100, 54, 153, 0.18); outline: none; }
+        .admin-console [id$="-card"], .admin-console [id$="-queue-card"], .admin-console #admin-hedging-review, .admin-console #admin-plan-management, .admin-console #admin-ticket-management, .admin-console #admin-support-staff-management, .admin-console #admin-review-management { scroll-margin-top: 24px; }
+        .admin-sales-metric { border-color: rgba(168, 85, 247, 0.3); }
+        .admin-sales-metric #admin-sales-total { color: #d8b4fe; }
+        .admin-sales-metric #admin-sales-breakdown { color: #cbd5e1; font-size: 10px; }
+        .admin-sales-caveat { padding: 10px 13px; border: 1px solid rgba(251, 191, 36, 0.3); border-left: 3px solid #fbbf24; border-radius: 8px; background: rgba(57, 39, 9, 0.35); color: #fde68a; }
         .profile-section-tabs { margin: 0 0 16px; padding: 8px; border: 1px solid rgba(180, 190, 200, 0.1); border-radius: 12px; background: rgba(8, 9, 10, 0.72); }
         .profile-section-tabs .admin-section-tab { min-height: 42px; }
         .profile-section-panel[hidden] { display: none !important; }

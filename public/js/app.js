@@ -4986,8 +4986,17 @@ let connectedWallet = null;
                 };
                 setText('admin-active-wallets', Number(metrics.active_wallets || 0).toLocaleString());
                 setText('admin-all-time-wallets', Number(metrics.all_time_wallets || 0).toLocaleString());
-                setText('admin-sales-total', `$${Number(metrics.sales_stablecoins_usd ?? metrics.sales_usdt ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
-                setText('admin-sales-count', `${Number(metrics.verified_purchases || 0).toLocaleString()} verified USDT/USDC purchases`);
+                const verifiedPurchases = Number(metrics.verified_purchases || 0);
+                const unpricedPurchases = Number(metrics.unpriced_legacy_purchases || 0);
+                const salesTotal = Number(metrics.sales_stablecoins_usd ?? metrics.sales_usdt ?? 0);
+                const salesValueElement = document.getElementById('admin-sales-total');
+                if (salesValueElement) {
+                    salesValueElement.textContent = verifiedPurchases > 0 && unpricedPurchases === verifiedPurchases && salesTotal === 0
+                        ? 'Unavailable'
+                        : `$${salesTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+                }
+                setText('admin-sales-count', `${verifiedPurchases.toLocaleString()} verified purchases`);
+                setText('admin-sales-breakdown', `${formatAdminStablecoin(metrics.sales_usdt, 'USDT')} · ${formatAdminStablecoin(metrics.sales_usdc, 'USDC')}`);
                 setText('admin-paid-out-total', formatAdminStablecoinTotals(metrics.paid_withdrawal_usdt, metrics.paid_withdrawal_usdc));
                 setText('admin-paid-out-count', `${Number(metrics.paid_withdrawals || 0).toLocaleString()} payouts marked paid`);
                 setText('admin-withdrawal-count', Number(metrics.withdrawal_requests || 0).toLocaleString());
@@ -4996,7 +5005,10 @@ let connectedWallet = null;
                 setText('admin-open-tickets', Number(metrics.pending_tickets || 0).toLocaleString());
                 setText('admin-pending-reviews', Number(metrics.pending_reviews || 0).toLocaleString());
                 const salesCaveat = document.getElementById('admin-sales-caveat');
-                if (salesCaveat) salesCaveat.hidden = !Number(metrics.unpriced_legacy_purchases);
+                if (salesCaveat) {
+                    salesCaveat.hidden = !unpricedPurchases;
+                    salesCaveat.textContent = `${unpricedPurchases.toLocaleString()} verified purchase${unpricedPurchases === 1 ? '' : 's'} have no recorded payment amount, so they are excluded from the sales total. The exact historical value cannot be recovered from current purchase records.`;
+                }
                 const adminNav = document.getElementById('admin-nav-item');
                 if (adminNav) {
                     const totalPending = Number(metrics.pending_withdrawals || 0) +

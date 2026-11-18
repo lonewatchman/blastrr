@@ -900,30 +900,48 @@
         </section>
 
         <!-- 6. ADMIN CONTROL VIEW -->
-        <section id="adminView" class="view-panel workspace-view">
+        <section id="adminView" class="view-panel workspace-view admin-console">
             <div class="app-page-heading">
                 <div><span class="battlepass-eyebrow">WORKSPACE MANAGEMENT</span><h1>Admin control</h1></div>
-                <p class="support-note">Manage operations, users, plans, promotions, rewards, and service availability.</p>
+                <p class="support-note">Choose an area to manage platform operations, users, payouts, and content.</p>
             </div>
             <div class="admin-section-tabs" role="tablist" aria-label="Admin sections">
-                <button id="admin-operations-tab" class="admin-section-tab active" role="tab" aria-selected="true" onclick="switchAdminSection('admin-operations-panel')">Operations</button>
-                <button id="admin-creators-tab" class="admin-section-tab" role="tab" aria-selected="false" onclick="switchAdminSection('admin-creators-panel')">Creators &amp; Promos</button>
-                <button id="admin-battlepass-tab" class="admin-section-tab" role="tab" aria-selected="false" onclick="switchAdminSection('admin-battlepass-panel')">BlastrrPass</button>
-                <button id="admin-maintenance-tab" class="admin-section-tab" role="tab" aria-selected="false" onclick="switchAdminSection('admin-maintenance-panel')">Maintenance</button>
+                <button id="admin-operations-tab" class="admin-section-tab active" role="tab" aria-selected="true" aria-controls="admin-operations-panel" onclick="switchAdminSection('admin-operations-panel')">Operations</button>
+                <button id="admin-creators-tab" class="admin-section-tab" role="tab" aria-selected="false" aria-controls="admin-creators-panel" onclick="switchAdminSection('admin-creators-panel')">Creators &amp; Promos</button>
+                <button id="admin-battlepass-tab" class="admin-section-tab" role="tab" aria-selected="false" aria-controls="admin-battlepass-panel" onclick="switchAdminSection('admin-battlepass-panel')">BlastrrPass</button>
+                <button id="admin-maintenance-tab" class="admin-section-tab" role="tab" aria-selected="false" aria-controls="admin-maintenance-panel" onclick="switchAdminSection('admin-maintenance-panel')">Maintenance</button>
             </div>
             <div id="admin-operations-panel" class="admin-section-panel">
+            <nav class="admin-quick-actions" aria-label="Admin quick actions">
+                <div class="admin-quick-action-group">
+                    <h2>Money &amp; risk</h2>
+                    <a class="admin-quick-action" href="#admin-payout-queue-card">Review payouts <span>Approve or reject withdrawals</span></a>
+                    <a class="admin-quick-action" href="#admin-hedging-review">Hedging alerts <span>Investigate flagged accounts</span></a>
+                </div>
+                <div class="admin-quick-action-group">
+                    <h2>Users &amp; accounts</h2>
+                    <a class="admin-quick-action" href="#admin-user-search-card">Find a user <span>Review access, accounts, and login IPs</span></a>
+                    <a class="admin-quick-action" href="#admin-plan-management">Manage plans <span>Edit account plans for sale</span></a>
+                </div>
+                <div class="admin-quick-action-group">
+                    <h2>Community &amp; support</h2>
+                    <a class="admin-quick-action" href="#admin-ticket-management">Support tickets <span>Respond to customer requests</span></a>
+                    <a class="admin-quick-action" href="#admin-support-staff-management">Support staff <span>Grant or remove staff access</span></a>
+                    <a class="admin-quick-action" href="#admin-review-management">Review moderation <span>Publish or hide reviews</span></a>
+                </div>
+            </nav>
             <div id="admin-ops-notices" class="admin-ops-notices" role="status" aria-live="polite"></div>
             <div class="admin-dashboard-grid" aria-label="Operations summary">
                 <article class="admin-dashboard-metric"><span>Active wallet sessions</span><strong id="admin-active-wallets">—</strong></article>
                 <article class="admin-dashboard-metric"><span>Wallets connected (tracked)</span><strong id="admin-all-time-wallets">—</strong></article>
-                <article class="admin-dashboard-metric"><span>Verified sales (USDT + USDC)</span><strong id="admin-sales-total">—</strong><small id="admin-sales-count"></small></article>
+                <article class="admin-dashboard-metric admin-sales-metric"><span>Verified sales · USD face value</span><strong id="admin-sales-total">—</strong><small id="admin-sales-count"></small><small id="admin-sales-breakdown"></small></article>
                 <article class="admin-dashboard-metric"><span>Paid withdrawals</span><strong id="admin-paid-out-total">—</strong><small id="admin-paid-out-count"></small></article>
                 <article class="admin-dashboard-metric"><span>Withdrawal requests</span><strong id="admin-withdrawal-count">—</strong></article>
                 <article class="admin-dashboard-metric"><span>Pending withdrawals</span><strong id="admin-pending-out-total">—</strong><small id="admin-pending-out-count"></small></article>
                 <article class="admin-dashboard-metric"><span>Open support tickets</span><strong id="admin-open-tickets">—</strong></article>
                 <article class="admin-dashboard-metric"><span>Pending reviews</span><strong id="admin-pending-reviews">—</strong></article>
             </div>
-            <p id="admin-sales-caveat" class="support-note" hidden>Some older verified purchases predate exact amount tracking and are excluded from the sales total. Stablecoin amounts are shown at face value and do not account for depegs.</p>
+            <p id="admin-sales-caveat" class="support-note admin-sales-caveat" role="status" aria-live="polite" hidden></p>
             <p class="support-note">All-time wallet counts include existing profile records and successful signed sessions recorded from this release onward; older sessions outside retained IP history cannot be reconstructed.</p>
             <div class="card admin-operations-activity">
                 <div class="card-title">Live operations activity</div>
@@ -931,14 +949,14 @@
                     <li class="account-chart-empty">Loading recent activity...</li>
                 </ol>
             </div>
-            <div class="card admin-hedging-review">
+            <div id="admin-hedging-review" class="card admin-hedging-review">
                 <div class="card-title">Hedging alerts</div>
                 <p class="support-note">Opposite positions on the same market across a user’s accounts are prohibited. Review the user’s support ticket and resolve the issue before unfreezing the involved accounts from their user card.</p>
                 <div id="admin-hedging-alert-list" class="admin-hedging-alert-list" aria-live="polite">
                     <p class="account-chart-empty">Loading hedging alerts...</p>
                 </div>
             </div>
-            <div class="card" style="border-color: rgba(220, 38, 38, 0.3);">
+            <div id="admin-payout-queue-card" class="card" style="border-color: rgba(220, 38, 38, 0.3);">
                 <div class="card-title admin-payout-title">Admin Withdrawal &amp; Payout Queue</div>
                 <div class="table-responsive">
                     <table>
@@ -959,7 +977,7 @@
                     </table>
                 </div>
             </div>
-            <div class="card admin-account-review">
+            <div id="admin-user-search-card" class="card admin-account-review">
                 <div class="card-title">Find a user and review their accounts</div>
                 <p class="admin-account-note">Search by username or wallet to suspend/restore user access and review accounts. A suspension preserves sign-in, read access, and existing-trade closing, but blocks purchases, new trades, and withdrawals. Expand a user for account controls, recent login IPs and new-IP warnings retained for 180 days. Per-account freezes remain separate from DLL/MLL risk locks.</p>
                 <form id="admin-user-search-form" class="admin-search-form">
@@ -974,7 +992,7 @@
                     <p class="account-chart-empty">Search for a username or wallet to review its accounts.</p>
                 </div>
             </div>
-            <div class="card admin-plan-management">
+            <div id="admin-plan-management" class="card admin-plan-management">
                 <div class="card-title">Plans and accounts for sale</div>
                 <p class="support-note">Create or update the plans users can buy. Deactivate a plan to remove it from sale without changing accounts that already use it.</p>
                 <form id="admin-plan-create-form" class="admin-plan-form">
@@ -993,13 +1011,13 @@
                     <p class="account-chart-empty">Loading plans...</p>
                 </div>
             </div>
-            <div class="card admin-support-review">
+            <div id="admin-ticket-management" class="card admin-support-review">
                 <div class="card-title">Support ticket queue</div>
                 <div id="admin-ticket-list" class="support-card-list">
                     <p class="account-chart-empty">Loading support tickets...</p>
                 </div>
             </div>
-            <div class="card admin-support-staff-management">
+            <div id="admin-support-staff-management" class="card admin-support-staff-management">
                 <div class="card-title">Support staff access</div>
                 <p class="support-note">Support staff receive a separate workspace limited to Tickets and Reviews. Add or remove access by wallet address.</p>
                 <form id="admin-support-staff-form" class="admin-search-form">
@@ -1018,7 +1036,7 @@
                     <p class="account-chart-empty">Loading support staff...</p>
                 </div>
             </div>
-            <div class="card admin-review-management">
+            <div id="admin-review-management" class="card admin-review-management">
                 <div class="card-title">Customer review moderation</div>
                 <p class="support-note">Publish a review to show it on the public homepage. Hide it to remove it from public display.</p>
                 <div id="admin-review-list" class="support-card-list">

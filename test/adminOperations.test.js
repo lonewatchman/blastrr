@@ -11,7 +11,10 @@ const landingHtml = fs.readFileSync('public/index.html', 'utf8');
 test('admin operations report recorded money flows and protect live reads with the admin wallet session', () => {
   assert.match(databaseJs, /amount_usdt REAL/);
   assert.match(serverJs, /INSERT INTO purchases \(tx_hash, chain_id, wallet_address, account_id, quantity, amount_usdt\)/);
-  assert.match(serverJs, /COALESCE\(SUM\(amount_usdt\), 0\) AS sales_usdt/);
+  assert.match(serverJs, /COALESCE\(SUM\(amount_usdt\), 0\) AS sales_stablecoins_usd/);
+  assert.match(serverJs, /THEN COALESCE\(amount_usdt, 0\) ELSE 0 END\), 0\) AS sales_usdt/);
+  assert.match(serverJs, /AS sales_usdc/);
+  assert.match(serverJs, /unpriced_legacy_purchases/);
   assert.match(serverJs, /COALESCE\(user_amount, ROUND\(amount \* 0\.9, 2\)\)/);
   assert.match(serverJs, /app\.get\('\/api\/admin\/operations\/dashboard', requireWalletSession, requireAdminSession/);
   assert.match(serverJs, /app\.get\('\/api\/admin\/withdrawals', requireWalletSession, requireAdminSession/);
@@ -25,7 +28,10 @@ test('admin operations report recorded money flows and protect live reads with t
   assert.match(appJs, /setInterval\(\(\) => \{[\s\S]*?loadAdminOperationsDashboard\(\);[\s\S]*?\}, 15000\)/);
   assert.match(appHtml, /id="admin-operations-feed"/);
   assert.match(appHtml, /id="admin-sales-total"/);
+  assert.match(appHtml, /admin-quick-actions/);
+  assert.match(appHtml, /id="admin-payout-queue-card"/);
   assert.match(appHtml, /id="admin-paid-out-total"/);
+  assert.match(appJs, /verifiedPurchases > 0 && unpricedPurchases === verifiedPurchases && salesTotal === 0/);
 });
 
 test('purchase-linked referral provenance is persisted and historical ambiguity is not fabricated', () => {

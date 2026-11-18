@@ -2201,7 +2201,11 @@ app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSes
       db.get(
         `SELECT COUNT(*) AS verified_purchases,
                 COALESCE(SUM(amount_usdt), 0) AS sales_stablecoins_usd,
-                SUM(CASE WHEN amount_usdt IS NULL THEN 1 ELSE 0 END) AS unpriced_legacy_purchases
+                COALESCE(SUM(CASE WHEN UPPER(COALESCE(payment_asset, 'USDT')) = 'USDT'
+                                  THEN COALESCE(amount_usdt, 0) ELSE 0 END), 0) AS sales_usdt,
+                COALESCE(SUM(CASE WHEN UPPER(COALESCE(payment_asset, 'USDT')) = 'USDC'
+                                  THEN COALESCE(amount_usdt, 0) ELSE 0 END), 0) AS sales_usdc,
+                COALESCE(SUM(CASE WHEN amount_usdt IS NULL THEN 1 ELSE 0 END), 0) AS unpriced_legacy_purchases
          FROM purchases WHERE chain_id > 0`,
         [],
         (salesErr, sales) => {
@@ -2300,7 +2304,8 @@ app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSes
                               all_time_wallets: Number(wallets?.all_time_wallets || 0),
                               verified_purchases: Number(sales?.verified_purchases || 0),
                               sales_stablecoins_usd: Number(sales?.sales_stablecoins_usd || 0),
-                              sales_usdt: Number(sales?.sales_stablecoins_usd || 0),
+                              sales_usdt: Number(sales?.sales_usdt || 0),
+                              sales_usdc: Number(sales?.sales_usdc || 0),
                               unpriced_legacy_purchases: Number(sales?.unpriced_legacy_purchases || 0),
                               withdrawal_requests: Number(withdrawals?.total_requests || 0),
                               paid_withdrawals: Number(withdrawals?.paid_count || 0),
