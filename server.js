@@ -4441,7 +4441,17 @@ app.post('/api/accounts/purchase', sensitiveLimiter, requireWalletSession, requi
                       normalizedTxHash, normalizedTxHash, normalizedTxHash
                     ],
                     function(purchaseErr) {
-                      if (purchaseErr) return rollback(409, 'This transaction or discount code has already been used.');
+                      if (purchaseErr) {
+                        console.error('Unable to record verified purchase and payment amount:', purchaseErr.message);
+                        const duplicatePurchase = /UNIQUE constraint failed: purchases\.tx_hash|PRIMARY KEY constraint failed/i
+                          .test(purchaseErr.message || '');
+                        return rollback(
+                          duplicatePurchase ? 409 : 500,
+                          duplicatePurchase
+                            ? 'This transaction or discount code has already been used.'
+                            : 'Unable to record the verified purchase amount.'
+                        );
+                      }
                       if (this.changes !== 1) return rollback(409, 'This transaction ID has already been used.');
                   const provisionAccounts = (index, onComplete) => {
                     if (index >= accountIds.length) return onComplete();

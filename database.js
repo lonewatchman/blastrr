@@ -868,6 +868,34 @@ function initTables() {
                 OR substr(LOWER(tx_hash), 1, 5) IN ('free_', 'pass_')`,
             backfillErr => {
               if (backfillErr) console.error('Unable to record zero-value promo purchases', backfillErr.message);
+              db.run(
+                `CREATE TRIGGER IF NOT EXISTS purchases_require_recorded_paid_amount
+                 BEFORE INSERT ON purchases
+                 WHEN NEW.chain_id > 0 AND (
+                   NEW.amount_usdt IS NULL OR NEW.amount_usdt <= 0
+                   OR UPPER(COALESCE(NEW.payment_asset, '')) NOT IN ('USDT', 'USDC')
+                 )
+                 BEGIN
+                   SELECT RAISE(ABORT, 'Paid purchases require a positive recorded USDT or USDC amount');
+                 END`,
+                triggerErr => {
+                  if (triggerErr) console.error('Unable to enforce recorded amounts for paid purchases', triggerErr.message);
+                  db.run(
+                    `CREATE TRIGGER IF NOT EXISTS purchases_keep_recorded_paid_amount
+                     BEFORE UPDATE OF chain_id, amount_usdt, payment_asset ON purchases
+                     WHEN NEW.chain_id > 0 AND (
+                       NEW.amount_usdt IS NULL OR NEW.amount_usdt <= 0
+                       OR UPPER(COALESCE(NEW.payment_asset, '')) NOT IN ('USDT', 'USDC')
+                     )
+                     BEGIN
+                       SELECT RAISE(ABORT, 'Paid purchases require a positive recorded USDT or USDC amount');
+                     END`,
+                    updateTriggerErr => {
+                      if (updateTriggerErr) console.error('Unable to protect recorded amounts for paid purchases', updateTriggerErr.message);
+                    }
+                  );
+                }
+              );
             }
           );
         }

@@ -11,8 +11,12 @@ const landingHtml = fs.readFileSync('public/index.html', 'utf8');
 test('admin operations report recorded money flows and protect live reads with the admin wallet session', () => {
   assert.match(databaseJs, /amount_usdt REAL/);
   assert.match(databaseJs, /tx_hash TEXT PRIMARY KEY/);
-  assert.match(serverJs, /INSERT INTO purchases \(tx_hash, chain_id, wallet_address, account_id, quantity, amount_usdt\)/);
+  assert.match(serverJs, /INSERT INTO purchases \([\s\S]*?amount_usdt, payment_asset, payer_address\s*\)\s*SELECT \?, \?, \?, \?, \?, \?, \?, \?/);
   assert.match(serverJs, /quantity,\s*totalPrice, recordedPaymentAsset, payerAddress/);
+  assert.match(databaseJs, /CREATE TRIGGER IF NOT EXISTS purchases_require_recorded_paid_amount[\s\S]*?NEW\.amount_usdt IS NULL OR NEW\.amount_usdt <= 0/);
+  assert.match(databaseJs, /CREATE TRIGGER IF NOT EXISTS purchases_keep_recorded_paid_amount/);
+  assert.match(serverJs, /Unable to record the verified purchase amount/);
+  assert.match(serverJs, /duplicatePurchase \? 409 : 500/);
   assert.match(serverJs, /COUNT\(CASE WHEN amount_usdt > 0[\s\S]*?AS verified_purchases/);
   assert.match(serverJs, /COALESCE\(SUM\(CASE WHEN amount_usdt > 0[\s\S]*?THEN amount_usdt ELSE 0 END\), 0\) AS sales_stablecoins_usd/);
   assert.match(serverJs, /amount_usdt > 0 AND UPPER\(COALESCE\(payment_asset, 'USDT'\)\) = 'USDT'[\s\S]*?THEN amount_usdt ELSE 0 END\), 0\) AS sales_usdt/);
