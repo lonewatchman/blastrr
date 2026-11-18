@@ -198,6 +198,8 @@ function initTables() {
       account_id TEXT NOT NULL,
       quantity INTEGER NOT NULL DEFAULT 1,
       amount_usdt REAL,
+      payment_asset TEXT NOT NULL DEFAULT 'USDT',
+      payer_address TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
 
@@ -303,6 +305,8 @@ function initTables() {
       user_ip TEXT,
       user_amount REAL,
       admin_share REAL,
+      payout_chain_id INTEGER,
+      payout_asset TEXT NOT NULL DEFAULT 'USDT',
       funds_deducted INTEGER DEFAULT 0,
       paid_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -314,6 +318,8 @@ function initTables() {
       wallet_address TEXT,
       amount REAL,
       status TEXT DEFAULT 'PENDING',
+      payout_chain_id INTEGER,
+      payout_asset TEXT NOT NULL DEFAULT 'USDT',
       paid_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
@@ -792,7 +798,9 @@ function initTables() {
       const existing = new Set(columns.map(column => column.name));
       const additions = [
         ['quantity', 'INTEGER NOT NULL DEFAULT 1'],
-        ['amount_usdt', 'REAL']
+        ['amount_usdt', 'REAL'],
+        ['payment_asset', "TEXT NOT NULL DEFAULT 'USDT'"],
+        ['payer_address', 'TEXT']
       ].filter(([name]) => !existing.has(name));
       const addNextColumn = index => {
         if (index >= additions.length) return;
@@ -984,6 +992,8 @@ function initTables() {
         ['user_ip', 'TEXT'],
         ['user_amount', 'REAL'],
         ['admin_share', 'REAL'],
+        ['payout_chain_id', 'INTEGER'],
+        ['payout_asset', "TEXT NOT NULL DEFAULT 'USDT'"],
         ['funds_deducted', 'INTEGER'],
         ['paid_at', 'DATETIME']
       ].filter(([name]) => !existing.has(name));
@@ -1014,10 +1024,24 @@ function initTables() {
         console.error('Unable to inspect referral_withdrawals schema', err.message);
         return;
       }
-      if (columns.some(column => column.name === 'paid_at')) return;
-      db.run('ALTER TABLE referral_withdrawals ADD COLUMN paid_at DATETIME', alterErr => {
-        if (alterErr) console.error('Unable to add referral_withdrawals.paid_at', alterErr.message);
-      });
+      const existing = new Set(columns.map(column => column.name));
+      const additions = [
+        ['paid_at', 'DATETIME'],
+        ['payout_chain_id', 'INTEGER'],
+        ['payout_asset', "TEXT NOT NULL DEFAULT 'USDT'"]
+      ].filter(([name]) => !existing.has(name));
+      const addNext = index => {
+        if (index >= additions.length) return;
+        const [name, type] = additions[index];
+        db.run(`ALTER TABLE referral_withdrawals ADD COLUMN ${name} ${type}`, alterErr => {
+          if (alterErr) {
+            console.error(`Unable to add referral_withdrawals.${name}`, alterErr.message);
+            return addNext(index + 1);
+          }
+          addNext(index + 1);
+        });
+      };
+      addNext(0);
     });
   });
 }

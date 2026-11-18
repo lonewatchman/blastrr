@@ -6,12 +6,29 @@ const markets = require('../public/config/markets.json');
 const serverJs = fs.readFileSync('server.js', 'utf8');
 const appJs = fs.readFileSync('public/js/app.js', 'utf8');
 
-test('all supported-chain purchases use the same treasury recipient in the client and verifier', () => {
-  const treasury = '0xFBD3B9bA404f590b9A7b35B72104bEff9DEa5503';
+test('supported EVM purchases use the configured treasury recipient in the client and verifier', () => {
+  const treasury = '0x9c19edeba86b214db5b3d21da9416d5e5568365b';
   assert.match(serverJs, new RegExp(`const TREASURY_WALLET = '${treasury}'`));
   assert.match(appJs, new RegExp(`const TREASURY_WALLET = "${treasury}"`));
-  assert.match(serverJs, /verifyMultiChainPurchase\(tx_hash, Number\(chain_id\), wallet_address, totalPrice, TREASURY_WALLET\)/);
+  assert.match(serverJs, /verifyMultiChainPurchase\([\s\S]*?wallet_address, totalPrice, TREASURY_WALLET, paymentAsset\)/);
   assert.match(appJs, /const paddedRecipient = TREASURY_WALLET\.toLowerCase\(\)/);
+});
+
+test('Solana treasury and official USDC token addresses are configured for supported networks', () => {
+  assert.match(serverJs, /const SOLANA_TREASURY_WALLET = 'A3AVrbzCYzqKEkBR7pDQGYgnAbmBF9qNMQDX84QpuRZx'/);
+  assert.match(serverJs, /USDC: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'/);
+  assert.match(appJs, /const SOLANA_TREASURY_WALLET = 'A3AVrbzCYzqKEkBR7pDQGYgnAbmBF9qNMQDX84QpuRZx'/);
+  assert.match(appJs, /USDC: \{ address: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6 \}/);
+  for (const address of [
+    '0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+    '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+    '0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359',
+    '0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E'
+  ]) {
+    assert.ok(serverJs.toLowerCase().includes(address.toLowerCase()), `missing official USDC address ${address}`);
+    assert.ok(appJs.toLowerCase().includes(address.toLowerCase()), `missing official USDC address ${address}`);
+  }
+  assert.doesNotMatch(serverJs.match(/56:\s*\{[\s\S]*?tokens:\s*\{([\s\S]*?)\}\s*\}/)?.[1] || '', /USDC/);
 });
 
 test('plan configuration preserves existing seed limits and valid values', () => {

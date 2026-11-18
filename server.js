@@ -47,7 +47,13 @@ const {
 const app = express();
 const PORT = process.env.PORT || 4480;
 
-const TREASURY_WALLET = '0xFBD3B9bA404f590b9A7b35B72104bEff9DEa5503';
+const TREASURY_WALLET = '0x9c19edeba86b214db5b3d21da9416d5e5568365b';
+const SOLANA_TREASURY_WALLET = 'A3AVrbzCYzqKEkBR7pDQGYgnAbmBF9qNMQDX84QpuRZx';
+const SOLANA_TOKEN_ADDRESSES = {
+  USDT: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+  USDC: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+};
+const SOLANA_TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const DISCLAIMER_VERSION = '2026-11-17-v2';
 const MAINTENANCE_PAGE_IDS = ['home', 'trade', 'accounts', 'copytrading', 'leaderboard', 'blastrrpass', 'profile', 'plans', 'faq', 'docs'];
 
@@ -57,45 +63,64 @@ const SUPPORTED_EVM_CHAINS = {
         name: "Ethereum Mainnet",
         chainIdHex: "0x1",
         rpcUrl: process.env.ETHEREUM_RPC_URL || "https://ethereum-rpc.publicnode.com",
-        usdtAddress: "0xdac17f958d2ee523a2206206994597c13d831ec7",
-        decimals: 6
+        tokens: {
+            USDT: { address: "0xdac17f958d2ee523a2206206994597c13d831ec7", decimals: 6 },
+            USDC: { address: "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", decimals: 6 }
+        }
     },
     8453: {
         name: "Base",
         chainIdHex: "0x2105",
         rpcUrl: process.env.BASE_RPC_URL || "https://mainnet.base.org",
-        usdtAddress: "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2",
-        decimals: 6
+        tokens: {
+            USDT: { address: "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2", decimals: 6 },
+            USDC: { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6 }
+        }
     },
     137: {
         name: "Polygon PoS",
         chainIdHex: "0x89",
         rpcUrl: process.env.POLYGON_RPC_URL || "https://polygon-bor-rpc.publicnode.com",
-        usdtAddress: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f",
-        decimals: 6
+        tokens: {
+            USDT: { address: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", decimals: 6 },
+            USDC: { address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", decimals: 6 }
+        }
     },
     43114: {
         name: "Avalanche C-Chain",
         chainIdHex: "0xa86a",
         rpcUrl: process.env.AVALANCHE_RPC_URL || "https://avalanche-c-chain-rpc.publicnode.com",
-        usdtAddress: "0x9702230a8ea53601f5cd2dc00fdbc13d4df4a8c7",
-        decimals: 6
+        tokens: {
+            USDT: { address: "0x9702230a8ea53601f5cd2dc00fdbc13d4df4a8c7", decimals: 6 },
+            USDC: { address: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E", decimals: 6 }
+        }
     },
     56: {
         name: "BNB Smart Chain",
         chainIdHex: "0x38",
         rpcUrl: process.env.BSC_RPC_URL || "https://bsc-dataseed.binance.org",
-        usdtAddress: "0x55d398326f99059fF775485246999027B3197955",
-        decimals: 18
+        tokens: {
+            USDT: { address: "0x55d398326f99059fF775485246999027B3197955", decimals: 18 }
+        }
     },
     448000: {
         name: "NullNet Private EVM",
         chainIdHex: "0x6d600",
         rpcUrl: "https://rpc.lunul.org",
-        usdtAddress: "0x7ec3659A8225ED474D7c662126616aE08545C29b", // Your deployed contract address
-        decimals: 18
+        tokens: {
+            USDT: { address: "0x7ec3659A8225ED474D7c662126616aE08545C29b", decimals: 18 }
+        }
     }
 };
+
+function isValidPayoutSelection(walletType, chainId, assetSymbol) {
+    if (walletType === 'SOLANA') {
+        return chainId === 101 && Boolean(SOLANA_TOKEN_ADDRESSES[assetSymbol]);
+    }
+    return walletType === 'EVM' &&
+        chainId !== 101 &&
+        Boolean(SUPPORTED_EVM_CHAINS[chainId]?.tokens?.[assetSymbol]);
+}
 
 // --- 1. PROXY TRUST CONFIGURATION ---
 app.set('trust proxy', 'loopback');
@@ -474,29 +499,75 @@ function loadAccountWithLiveRisk(accountId, callback) {
   );
 }
 
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+function decodeBase58(value) {
+  if (typeof value !== 'string' || !value || !/^[1-9A-HJ-NP-Za-km-z]+$/.test(value)) return null;
+  let decoded = 0n;
+  for (const character of value) {
+    const digit = BASE58_ALPHABET.indexOf(character);
+    if (digit < 0) return null;
+    decoded = decoded * 58n + BigInt(digit);
+  }
+  const bytes = [];
+  while (decoded > 0n) {
+    bytes.unshift(Number(decoded & 255n));
+    decoded >>= 8n;
+  }
+  const leadingZeroes = value.match(/^1*/)[0].length;
+  return Buffer.concat([Buffer.alloc(leadingZeroes), Buffer.from(bytes)]);
+}
+
+function getWalletType(wallet) {
+  if (typeof wallet !== 'string') return null;
+  if (ethers.isAddress(wallet)) return 'EVM';
+  return decodeBase58(wallet)?.length === 32 ? 'SOLANA' : null;
+}
+
+function normalizeWalletAddress(wallet, walletType = getWalletType(wallet)) {
+  if (walletType === 'EVM' && ethers.isAddress(wallet)) return wallet.toLowerCase();
+  if (walletType === 'SOLANA' && decodeBase58(wallet)?.length === 32) return wallet;
+  return null;
+}
+
+function verifyTradeSignature(wallet, walletType, message, signature) {
+  if (walletType === 'EVM') return ethers.verifyMessage(message, signature).toLowerCase() === wallet;
+  const publicKeyBytes = decodeBase58(wallet);
+  const signatureBytes = Buffer.from(signature, 'base64');
+  if (!publicKeyBytes || publicKeyBytes.length !== 32 || signatureBytes.length !== 64 ||
+      signatureBytes.toString('base64') !== signature) return false;
+  const publicKey = crypto.createPublicKey({
+    key: Buffer.concat([Buffer.from('302a300506032b6570032100', 'hex'), publicKeyBytes]),
+    format: 'der',
+    type: 'spki'
+  });
+  return crypto.verify(null, Buffer.from(message, 'utf8'), publicKey, signatureBytes);
+}
+
 function requireTradeSignature(req, res, next) {
   const { wallet_address: wallet, signature, challenge } = req.body;
-  if (typeof wallet !== 'string' || !ethers.isAddress(wallet) ||
-      typeof signature !== 'string' || typeof challenge !== 'string') {
+  const walletType = req.body?.wallet_type || getWalletType(wallet);
+  const normalizedWallet = normalizeWalletAddress(wallet, walletType);
+  if (!normalizedWallet || typeof signature !== 'string' || typeof challenge !== 'string') {
     return res.status(401).json({ error: 'A signed wallet challenge is required.' });
   }
 
-  const key = wallet.toLowerCase();
   const stored = tradeChallenges.get(challenge);
   tradeChallenges.delete(challenge);
-  if (!stored || stored.walletAddress !== key || stored.expiresAt <= Date.now()) {
+  if (!stored || stored.walletAddress !== normalizedWallet || stored.walletType !== walletType || stored.expiresAt <= Date.now()) {
     return res.status(401).json({ error: 'Wallet challenge expired or already used.' });
   }
 
   try {
-    if (ethers.verifyMessage(stored.message, signature).toLowerCase() !== key) {
+    if (!verifyTradeSignature(normalizedWallet, walletType, stored.message, signature)) {
       return res.status(401).json({ error: 'Wallet signature does not match.' });
     }
   } catch {
     return res.status(401).json({ error: 'Wallet signature is invalid.' });
   }
-  req.walletAddress = key;
-  guardSupportStaffAccess(key, req, res, next);
+  req.walletAddress = normalizedWallet;
+  req.walletType = walletType;
+  guardSupportStaffAccess(normalizedWallet, req, res, next);
 }
 
 const SUPPORT_STAFF_ALLOWED_ROUTES = new Set([
@@ -513,9 +584,12 @@ const SUPPORT_STAFF_ALLOWED_ROUTES = new Set([
 ]);
 
 function guardSupportStaffAccess(wallet, req, res, next) {
+  const walletPredicate = getWalletType(wallet) === 'SOLANA'
+    ? 's.wallet_address = ?'
+    : 'LOWER(s.wallet_address) = LOWER(?)';
   db.get(
     `SELECT 1 FROM support_staff s
-     WHERE LOWER(s.wallet_address) = LOWER(?) AND s.active = 1
+     WHERE ${walletPredicate} AND s.active = 1
        AND NOT EXISTS (SELECT 1 FROM admins a WHERE LOWER(a.wallet_address) = LOWER(s.wallet_address))`,
     [wallet],
     (err, staff) => {
@@ -543,16 +617,15 @@ function requireWalletSession(req, res, next) {
       if (err) return res.status(500).json({ error: 'Unable to verify wallet session.' });
       if (!session) return res.status(401).json({ error: 'A valid wallet session is required.' });
       const requestedWallet = req.body?.wallet_address || req.query.wallet;
-      if (requestedWallet && (
-        typeof requestedWallet !== 'string' ||
-        !ethers.isAddress(requestedWallet) ||
-        requestedWallet.toLowerCase() !== session.wallet_address.toLowerCase()
-      )) {
+      const sessionWalletType = getWalletType(session.wallet_address);
+      if (requestedWallet && normalizeWalletAddress(requestedWallet) !==
+          normalizeWalletAddress(session.wallet_address, sessionWalletType)) {
         return res.status(403).json({ error: 'Wallet session does not match the requested wallet.' });
       }
       db.run('UPDATE wallet_sessions SET last_seen_at = ? WHERE token_hash = ?', [Date.now(), tokenHash], touchErr => {
         if (touchErr) return res.status(500).json({ error: 'Unable to refresh wallet session.' });
-        req.walletAddress = session.wallet_address.toLowerCase();
+        req.walletAddress = normalizeWalletAddress(session.wallet_address, sessionWalletType);
+        req.walletType = sessionWalletType;
         req.walletSessionIp = session.ip_address;
         req.walletSessionTokenHash = tokenHash;
         req.walletSessionReauthenticatedAt = session.reauthenticated_at;
@@ -564,9 +637,12 @@ function requireWalletSession(req, res, next) {
 }
 
 function requireSupportStaff(req, res, next) {
+  const walletPredicate = req.walletType === 'SOLANA'
+    ? 'wallet_address = ?'
+    : 'LOWER(wallet_address) = LOWER(?)';
   db.get(
     `SELECT role FROM support_staff
-     WHERE LOWER(wallet_address) = LOWER(?) AND active = 1`,
+     WHERE ${walletPredicate} AND active = 1`,
     [req.walletAddress],
     (err, staff) => {
       if (err) return res.status(500).json({ error: 'Unable to verify support staff role.' });
@@ -616,10 +692,13 @@ function requireWalletNotSoftLockedForNewCopyActions(req, res, next) {
 
 function requireSameWalletReauthentication(req, res, next) {
   const sessionWallet = req.walletAddress;
+  const sessionWalletType = req.walletType;
   requireTradeSignature(req, res, () => {
     const signedWallet = req.walletAddress;
+    const signedWalletType = req.walletType;
     req.walletAddress = sessionWallet;
-    if (signedWallet !== sessionWallet) {
+    req.walletType = sessionWalletType;
+    if (signedWallet !== sessionWallet || signedWalletType !== sessionWalletType) {
       return res.status(403).json({ error: 'The signed wallet does not match this wallet session.' });
     }
     next();
@@ -628,7 +707,7 @@ function requireSameWalletReauthentication(req, res, next) {
 
 function requireUserNotSuspended(req, res, next) {
   const wallet = req.walletAddress || req.body?.wallet_address;
-  if (typeof wallet !== 'string' || !ethers.isAddress(wallet)) {
+  if (!normalizeWalletAddress(wallet, req.walletType || getWalletType(wallet))) {
     return res.status(401).json({ error: 'A valid wallet session is required.' });
   }
   db.get(
@@ -665,18 +744,36 @@ function recordWalletLogin(wallet, ipAddress, callback) {
             (lookupErr, previousLogin) => {
               if (lookupErr) return rollback(lookupErr);
               const isNewIp = previousLogin ? 0 : 1;
-            db.run('INSERT OR IGNORE INTO users (wallet_address) VALUES (?)', [wallet], userErr => {
-              if (userErr) return rollback(userErr);
-              db.run(
-                `INSERT INTO user_login_ip_events (wallet_address, ip_address, is_new_ip)
-                 VALUES (?, ?, ?)`,
-                [wallet, ipAddress, isNewIp],
-                insertErr => {
-                  if (insertErr) return rollback(insertErr);
-                  db.run('COMMIT', commitErr => commitErr ? rollback(commitErr) : callback(null, { isNewIp }));
+              db.get(
+                `SELECT wallet_address FROM users WHERE LOWER(wallet_address) = LOWER(?) LIMIT 1`,
+                [wallet],
+                (identityErr, existingWallet) => {
+                  if (identityErr) return rollback(identityErr);
+                  if (existingWallet &&
+                      normalizeWalletAddress(existingWallet.wallet_address) !== normalizeWalletAddress(wallet)) {
+                    return rollback(Object.assign(
+                      new Error('This Solana address conflicts with an existing wallet identity and cannot be registered.'),
+                      { code: 'WALLET_IDENTITY_CONFLICT' }
+                    ));
+                  }
+                  db.run(
+                    'INSERT OR IGNORE INTO users (wallet_address) VALUES (?)',
+                    [wallet],
+                    userErr => {
+                      if (userErr) return rollback(userErr);
+                      db.run(
+                        `INSERT INTO user_login_ip_events (wallet_address, ip_address, is_new_ip)
+                         VALUES (?, ?, ?)`,
+                        [wallet, ipAddress, isNewIp],
+                        insertErr => {
+                          if (insertErr) return rollback(insertErr);
+                          db.run('COMMIT', commitErr => commitErr ? rollback(commitErr) : callback(null, { isNewIp }));
+                        }
+                      );
+                    }
+                  );
                 }
               );
-            });
             }
           );
         }
@@ -1379,9 +1476,10 @@ function getBattlePassTaskEligibility(task, wallet, periodKey, callback) {
 }
 
 // --- ON-CHAIN SECURE VERIFICATION FUNCTION ---
-async function verifyMultiChainPurchase(txHash, chainId, expectedBuyerWallet, expectedAmountUsdt, treasuryWallet) {
+async function verifyMultiChainPurchase(txHash, chainId, expectedBuyerWallet, expectedAmount, treasuryWallet, assetSymbol) {
     const chainConfig = SUPPORTED_EVM_CHAINS[chainId];
-    if (!chainConfig) {
+    const tokenConfig = chainConfig?.tokens?.[assetSymbol];
+    if (!tokenConfig) {
         return { success: false, error: "Unsupported blockchain network." };
     }
 
@@ -1404,10 +1502,10 @@ async function verifyMultiChainPurchase(txHash, chainId, expectedBuyerWallet, ex
         let validTransfer = false;
 
         for (const log of receipt.logs) {
-            if (log.address.toLowerCase() === chainConfig.usdtAddress.toLowerCase() && log.topics[0] === transferTopic) {
+            if (log.address.toLowerCase() === tokenConfig.address.toLowerCase() && log.topics[0] === transferTopic) {
                 const recipient = ethers.getAddress('0x' + log.topics[2].slice(26));
                 const rawValue = BigInt(log.data);
-                const expectedRawValue = ethers.parseUnits(Number(expectedAmountUsdt).toFixed(2), chainConfig.decimals);
+                const expectedRawValue = ethers.parseUnits(Number(expectedAmount).toFixed(2), tokenConfig.decimals);
 
                 if (recipient.toLowerCase() === treasuryWallet.toLowerCase() && rawValue >= expectedRawValue) {
                     validTransfer = true;
@@ -1417,7 +1515,7 @@ async function verifyMultiChainPurchase(txHash, chainId, expectedBuyerWallet, ex
         }
 
         if (!validTransfer) {
-            return { success: false, error: "Transaction logs do not show a valid USDT transfer to the treasury." };
+            return { success: false, error: `Transaction logs do not show a valid ${assetSymbol} transfer to the treasury.` };
         }
 
         return { success: true };
@@ -1427,15 +1525,111 @@ async function verifyMultiChainPurchase(txHash, chainId, expectedBuyerWallet, ex
     }
 }
 
+function solanaRpc(method, params) {
+    const endpoint = process.env.SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
+    const payload = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params });
+    return new Promise((resolve, reject) => {
+        const request = https.request(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Content-Length': Buffer.byteLength(payload)
+            }
+        }, response => {
+            let body = '';
+            response.setEncoding('utf8');
+            response.on('data', chunk => {
+                body += chunk;
+                if (body.length > 2 * 1024 * 1024) request.destroy(new Error('Solana RPC response exceeded the size limit.'));
+            });
+            response.on('end', () => {
+                if (response.statusCode < 200 || response.statusCode >= 300) {
+                    return reject(new Error(`Solana RPC returned HTTP ${response.statusCode}.`));
+                }
+                try {
+                    const result = JSON.parse(body);
+                    if (result.error) return reject(new Error(result.error.message || 'Solana RPC request failed.'));
+                    resolve(result.result);
+                } catch (error) {
+                    reject(error);
+                }
+            });
+        });
+        request.setTimeout(15000, () => request.destroy(new Error('Solana RPC request timed out.')));
+        request.on('error', reject);
+        request.end(payload);
+    });
+}
+
+async function verifySolanaPurchase(signature, paymentWallet, assetSymbol, expectedAmount) {
+    const mint = SOLANA_TOKEN_ADDRESSES[assetSymbol];
+    if (!mint || typeof paymentWallet !== 'string' || !/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(paymentWallet)) {
+        return { success: false, error: 'A supported Solana payment wallet and token are required.' };
+    }
+
+    try {
+        const transaction = await solanaRpc('getTransaction', [
+            signature,
+            { commitment: 'finalized', encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }
+        ]);
+        if (!transaction || transaction.meta?.err || !transaction.slot) {
+            return { success: false, error: 'Solana transaction is not finalized or it failed.' };
+        }
+
+        const accountKeys = transaction.transaction?.message?.accountKeys || [];
+        const payerSigned = accountKeys.some(key =>
+            key.pubkey === paymentWallet && key.signer === true
+        );
+        if (!payerSigned) {
+            return { success: false, error: 'The Solana transaction was not signed by the selected payment wallet.' };
+        }
+
+        const expectedRawAmount = BigInt(`${Number(expectedAmount).toFixed(2).replace('.', '')}${'0'.repeat(4)}`);
+        const transfers = transaction.transaction.message.instructions || [];
+        for (const instruction of transfers) {
+            const info = instruction.parsed?.info;
+            if (instruction.programId !== SOLANA_TOKEN_PROGRAM_ID ||
+                instruction.parsed?.type !== 'transferChecked' ||
+                info?.authority !== paymentWallet ||
+                info?.mint !== mint ||
+                Number(info.tokenAmount?.decimals) !== 6 ||
+                BigInt(info.tokenAmount?.amount || '0') < expectedRawAmount) {
+                continue;
+            }
+
+            const destinationKeyIndex = accountKeys.findIndex(key => key.pubkey === info.destination);
+            const destinationBalance = (transaction.meta.postTokenBalances || []).find(balance =>
+                balance.accountIndex === destinationKeyIndex && balance.mint === mint
+            );
+            let destinationOwner = destinationBalance?.owner;
+            if (!destinationOwner) {
+                const destinationAccount = await solanaRpc('getAccountInfo', [
+                    info.destination,
+                    { encoding: 'jsonParsed', commitment: 'finalized' }
+                ]);
+                const parsedAccount = destinationAccount?.value?.data?.parsed?.info;
+                if (parsedAccount?.mint === mint) destinationOwner = parsedAccount.owner;
+            }
+            if (destinationOwner === SOLANA_TREASURY_WALLET) return { success: true };
+        }
+
+        return { success: false, error: `Solana transaction does not show a valid ${assetSymbol} transfer to the treasury.` };
+    } catch (error) {
+        console.error('Solana purchase verification error:', error);
+        return { success: false, error: 'Solana transaction verification lookup failed.' };
+    }
+}
+
 // --- API ROUTES ---
 
 app.post('/api/auth/trade-challenge', sensitiveLimiter, challengeLimiter, (req, res) => {
   const wallet = req.body?.wallet_address;
-  if (typeof wallet !== 'string' || !ethers.isAddress(wallet)) {
-    return res.status(400).json({ error: 'A valid wallet address is required.' });
+  const walletType = String(req.body?.wallet_type || getWalletType(wallet) || '').toUpperCase();
+  const key = normalizeWalletAddress(wallet, walletType);
+  if (!key) {
+    return res.status(400).json({ error: 'A valid EVM or Solana wallet address is required.' });
   }
 
-  const key = wallet.toLowerCase();
   const now = Date.now();
   for (const [challengeWallet, challenge] of tradeChallenges) {
     if (challenge.expiresAt <= now) tradeChallenges.delete(challengeWallet);
@@ -1444,20 +1638,36 @@ app.post('/api/auth/trade-challenge', sensitiveLimiter, challengeLimiter, (req, 
     return res.status(503).json({ error: 'Wallet authorization is temporarily unavailable.' });
   }
 
-  const nonce = crypto.randomBytes(24).toString('hex');
-  const expiresAt = now + 2 * 60 * 1000;
-  const message = `Blastrr trade authorization\nWallet: ${key}\nNonce: ${nonce}\nExpires: ${expiresAt}`;
-  tradeChallenges.set(message, { message, walletAddress: key, expiresAt });
-  res.json({ challenge: message });
+  db.get(
+    'SELECT wallet_address FROM users WHERE LOWER(wallet_address) = LOWER(?) LIMIT 1',
+    [key],
+    (lookupErr, existingWallet) => {
+      if (lookupErr) return res.status(500).json({ error: 'Unable to verify wallet identity.' });
+      if (existingWallet &&
+          normalizeWalletAddress(existingWallet.wallet_address) !== key) {
+        return res.status(409).json({ error: 'This Solana address conflicts with an existing wallet identity and cannot be registered.' });
+      }
+
+      const nonce = crypto.randomBytes(24).toString('hex');
+      const expiresAt = Date.now() + 2 * 60 * 1000;
+      const message = `Blastrr trade authorization\nWallet type: ${walletType}\nWallet: ${key}\nNonce: ${nonce}\nExpires: ${expiresAt}`;
+      tradeChallenges.set(message, { message, walletAddress: key, walletType, expiresAt });
+      res.json({ challenge: message });
+    }
+  );
 });
 
 app.post('/api/auth/wallet-session', sensitiveLimiter, requireTradeSignature, walletSessionLimiter, (req, res) => {
   const token = crypto.randomBytes(32).toString('hex');
   const expiresAt = Date.now() + WALLET_SESSION_DURATION_MS;
-  const wallet = req.body.wallet_address.toLowerCase();
+  const wallet = req.walletAddress;
+  const walletType = req.walletType;
   const ipAddress = req.ip || 'unknown';
   recordWalletLogin(wallet, ipAddress, (loginErr, login) => {
     if (loginErr) {
+      if (loginErr.code === 'WALLET_IDENTITY_CONFLICT') {
+        return res.status(409).json({ error: loginErr.message });
+      }
       console.error('Unable to record wallet login IP:', loginErr.message);
       return res.status(500).json({ error: 'Unable to record login security details.' });
     }
@@ -1532,7 +1742,7 @@ app.post('/api/user/disclaimer-consent', sensitiveLimiter, requireWalletSession,
     `INSERT INTO wallet_disclaimer_acceptances (wallet_address, version)
      VALUES (?, ?)
      ON CONFLICT(wallet_address, version) DO UPDATE SET accepted_at = CURRENT_TIMESTAMP`,
-    [req.walletAddress.toLowerCase(), DISCLAIMER_VERSION],
+    [req.walletAddress, DISCLAIMER_VERSION],
     (err) => {
       if (err) return res.status(500).json({ error: 'Unable to remember disclaimer acceptance.' });
       res.json({ success: true, version: DISCLAIMER_VERSION });
@@ -1673,7 +1883,7 @@ app.post('/api/admin/battlepass/load', sensitiveLimiter, requireTradeSignature, 
 
 app.get('/api/battlepass', requireWalletSession, (req, res) => {
   const wallet = req.query.wallet;
-  if (typeof wallet !== 'string' || !ethers.isAddress(wallet) || wallet.toLowerCase() !== req.walletAddress) {
+  if (typeof wallet !== 'string' || normalizeWalletAddress(wallet) !== req.walletAddress) {
     return res.status(403).json({ error: 'Wallet session does not match the requested battle pass.' });
   }
   db.run(
@@ -1952,8 +2162,11 @@ app.get('/api/auth/role', requireWalletSession, (req, res) => {
   const wallet = req.walletAddress;
   db.get("SELECT role FROM admins WHERE LOWER(wallet_address) = LOWER(?)", [wallet], (err, admin) => {
     if (err) return res.status(500).json({ error: 'Unable to load wallet roles.' });
+    const staffWalletPredicate = req.walletType === 'SOLANA'
+      ? 'wallet_address = ?'
+      : 'LOWER(wallet_address) = LOWER(?)';
     db.get(
-      "SELECT role FROM support_staff WHERE LOWER(wallet_address) = LOWER(?) AND active = 1",
+      `SELECT role FROM support_staff WHERE ${staffWalletPredicate} AND active = 1`,
       [wallet],
       (staffErr, staff) => {
         if (staffErr) return res.status(500).json({ error: 'Unable to load wallet roles.' });
@@ -1978,7 +2191,7 @@ app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSes
       if (walletErr) return res.status(500).json({ error: 'Unable to load wallet activity totals.' });
       db.get(
         `SELECT COUNT(*) AS verified_purchases,
-                COALESCE(SUM(amount_usdt), 0) AS sales_usdt,
+                COALESCE(SUM(amount_usdt), 0) AS sales_stablecoins_usd,
                 SUM(CASE WHEN amount_usdt IS NULL THEN 1 ELSE 0 END) AS unpriced_legacy_purchases
          FROM purchases WHERE chain_id > 0`,
         [],
@@ -1988,13 +2201,17 @@ app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSes
             `SELECT COUNT(*) AS total_requests,
                     SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) AS pending_count,
                    SUM(CASE WHEN status = 'PAID' THEN 1 ELSE 0 END) AS paid_count,
-                    COALESCE(SUM(CASE WHEN status = 'PENDING' THEN payout_amount ELSE 0 END), 0) AS pending_usdt,
-                    COALESCE(SUM(CASE WHEN status = 'PAID' THEN payout_amount ELSE 0 END), 0) AS paid_usdt
+                            COALESCE(SUM(CASE WHEN status = 'PENDING' AND payout_asset = 'USDT' THEN payout_amount ELSE 0 END), 0) AS pending_usdt,
+                            COALESCE(SUM(CASE WHEN status = 'PENDING' AND payout_asset = 'USDC' THEN payout_amount ELSE 0 END), 0) AS pending_usdc,
+                            COALESCE(SUM(CASE WHEN status = 'PAID' AND payout_asset = 'USDT' THEN payout_amount ELSE 0 END), 0) AS paid_usdt,
+                            COALESCE(SUM(CASE WHEN status = 'PAID' AND payout_asset = 'USDC' THEN payout_amount ELSE 0 END), 0) AS paid_usdc
              FROM (
-               SELECT status, COALESCE(user_amount, ROUND(amount * 0.9, 2)) AS payout_amount
+                       SELECT status, COALESCE(user_amount, ROUND(amount * 0.9, 2)) AS payout_amount,
+                              COALESCE(payout_asset, 'USDT') AS payout_asset
                FROM withdrawals
                UNION ALL
-               SELECT status, amount AS payout_amount FROM referral_withdrawals
+                       SELECT status, amount AS payout_amount, COALESCE(payout_asset, 'USDT') AS payout_asset
+                       FROM referral_withdrawals
              ) payouts`,
             [],
             (withdrawalErr, withdrawals) => {
@@ -2013,6 +2230,7 @@ app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSes
                         `SELECT 'purchase:' || p.tx_hash AS event_id, 'ACCOUNT_PURCHASE' AS event_type,
                                 p.created_at AS occurred_at, p.wallet_address, COALESCE(u.username, '') AS username,
                                 p.tx_hash, p.chain_id, COALESCE(p.amount_usdt, 0) AS amount_usdt,
+                                COALESCE(p.payment_asset, 'USDT') AS payment_asset,
                                 p.quantity, COALESCE(pl.name, 'Trading account') AS plan_name,
                                 a.id AS account_id, NULL AS status, NULL AS withdrawal_type
                          FROM purchases p
@@ -2027,7 +2245,9 @@ app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSes
                                   ELSE 'PERFORMANCE_PAYOUT_REQUESTED' END AS event_type,
                                 CASE WHEN w.status = 'PAID' THEN COALESCE(w.paid_at, w.created_at) ELSE w.created_at END AS occurred_at,
                                 w.wallet_address, COALESCE(u.username, '') AS username,
-                                NULL AS tx_hash, NULL AS chain_id, COALESCE(w.user_amount, ROUND(w.amount * 0.9, 2)) AS amount_usdt,
+                                NULL AS tx_hash, w.payout_chain_id AS chain_id,
+                                COALESCE(w.user_amount, ROUND(w.amount * 0.9, 2)) AS amount_usdt,
+                                COALESCE(w.payout_asset, 'USDT') AS payment_asset,
                                 1 AS quantity, COALESCE(pl.name, w.plan_name, 'Trading account') AS plan_name,
                                 w.account_id, w.status, 'ACCOUNT' AS withdrawal_type
                          FROM withdrawals w
@@ -2041,7 +2261,8 @@ app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSes
                                   ELSE 'REFERRAL_PAYOUT_REQUESTED' END AS event_type,
                                 CASE WHEN rw.status = 'PAID' THEN COALESCE(rw.paid_at, rw.created_at) ELSE rw.created_at END AS occurred_at,
                                 rw.wallet_address, COALESCE(u.username, '') AS username,
-                                NULL AS tx_hash, NULL AS chain_id, rw.amount AS amount_usdt,
+                                NULL AS tx_hash, rw.payout_chain_id AS chain_id, rw.amount AS amount_usdt,
+                                COALESCE(rw.payout_asset, 'USDT') AS payment_asset,
                                 1 AS quantity, 'Referral commission' AS plan_name,
                                 NULL AS account_id, rw.status, 'COMMISSION' AS withdrawal_type
                          FROM referral_withdrawals rw
@@ -2049,7 +2270,7 @@ app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSes
                          UNION ALL
                          SELECT 'ticket:' || t.id || ':created' AS event_id, 'TICKET_OPENED' AS event_type,
                                 t.created_at AS occurred_at, t.wallet_address, COALESCE(u.username, '') AS username,
-                                NULL AS tx_hash, NULL AS chain_id, 0 AS amount_usdt, 1 AS quantity,
+                                NULL AS tx_hash, NULL AS chain_id, 0 AS amount_usdt, NULL AS payment_asset, 1 AS quantity,
                                 t.subject AS plan_name, t.account_id, t.status, NULL AS withdrawal_type
                          FROM support_tickets t
                          LEFT JOIN users u ON LOWER(u.wallet_address) = LOWER(t.wallet_address)
@@ -2057,7 +2278,7 @@ app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSes
                          SELECT 'review:' || r.account_id || ':' || r.updated_at AS event_id,
                                 'REVIEW_PENDING' AS event_type, r.updated_at AS occurred_at,
                                 r.wallet_address, r.username, NULL AS tx_hash, NULL AS chain_id,
-                                0 AS amount_usdt, 1 AS quantity, 'Review awaiting moderation' AS plan_name,
+                                0 AS amount_usdt, NULL AS payment_asset, 1 AS quantity, 'Review awaiting moderation' AS plan_name,
                                 r.account_id, r.moderation_status AS status, NULL AS withdrawal_type
                          FROM user_reviews r WHERE r.moderation_status = 'PENDING'
                          ORDER BY occurred_at DESC LIMIT 50`,
@@ -2069,13 +2290,16 @@ app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSes
                               active_wallets: Number(wallets?.active_wallets || 0),
                               all_time_wallets: Number(wallets?.all_time_wallets || 0),
                               verified_purchases: Number(sales?.verified_purchases || 0),
-                              sales_usdt: Number(sales?.sales_usdt || 0),
+                              sales_stablecoins_usd: Number(sales?.sales_stablecoins_usd || 0),
+                              sales_usdt: Number(sales?.sales_stablecoins_usd || 0),
                               unpriced_legacy_purchases: Number(sales?.unpriced_legacy_purchases || 0),
                               withdrawal_requests: Number(withdrawals?.total_requests || 0),
                               paid_withdrawals: Number(withdrawals?.paid_count || 0),
                               pending_withdrawals: Number(withdrawals?.pending_count || 0),
                               pending_withdrawal_usdt: Number(withdrawals?.pending_usdt || 0),
+                              pending_withdrawal_usdc: Number(withdrawals?.pending_usdc || 0),
                               paid_withdrawal_usdt: Number(withdrawals?.paid_usdt || 0),
+                              paid_withdrawal_usdc: Number(withdrawals?.paid_usdc || 0),
                               pending_tickets: Number(tickets?.pending_tickets || 0),
                               pending_reviews: Number(reviews?.pending_reviews || 0)
                             },
@@ -2246,7 +2470,7 @@ app.post('/api/admin/maintenance/save', sensitiveLimiter, requireTradeSignature,
   }
 
   const offlineSet = new Set(offlinePages);
-  const wallet = req.body.wallet_address.toLowerCase();
+  const wallet = req.walletAddress;
   const rollback = error => db.run('ROLLBACK', () => res.status(500).json({ error }));
   db.serialize(() => {
     db.run('BEGIN IMMEDIATE', beginErr => {
@@ -2281,7 +2505,7 @@ app.post('/api/admin/maintenance/save', sensitiveLimiter, requireTradeSignature,
 
 app.get('/api/user/profile', requireWalletSession, (req, res) => {
   const wallet = req.query.wallet;
-  if (typeof wallet !== 'string' || wallet.toLowerCase() !== req.walletAddress) {
+  if (typeof wallet !== 'string' || normalizeWalletAddress(wallet) !== req.walletAddress) {
     return res.status(403).json({ error: 'Wallet session does not match the requested profile.' });
   }
 
@@ -2406,7 +2630,7 @@ app.post('/api/user/profile', sensitiveLimiter, requireTradeSignature, (req, res
 });
 
 app.post('/api/user/creator-application', sensitiveLimiter, requireTradeSignature, (req, res) => {
-  const wallet = req.body.wallet_address.toLowerCase();
+  const wallet = req.walletAddress;
   const linkFields = ['x_url', 'youtube_url', 'tiktok_url', 'instagram_url', 'twitch_url', 'discord_url', 'website_url'];
   const links = {};
   for (const field of linkFields) {
@@ -2484,7 +2708,7 @@ app.post('/api/admin/creator-applications/action', sensitiveLimiter, requireTrad
   const wallet = req.body?.user_wallet;
   const action = req.body?.action;
   const referralPct = Number(req.body?.referral_pct);
-  if (typeof wallet !== 'string' || !ethers.isAddress(wallet) || !['APPROVE', 'REJECT'].includes(action)) {
+  if (typeof wallet !== 'string' || !normalizeWalletAddress(wallet) || !['APPROVE', 'REJECT'].includes(action)) {
     return res.status(400).json({ error: 'Choose a valid creator application and approval action.' });
   }
   if (action === 'APPROVE' && (!Number.isFinite(referralPct) || referralPct < 0 || referralPct > 100)) {
@@ -2647,7 +2871,7 @@ function attachTicketMessages(tickets, callback) {
 
 app.get('/api/user/tickets', requireWalletSession, (req, res) => {
   const wallet = req.query.wallet;
-  if (typeof wallet !== 'string' || !ethers.isAddress(wallet) || wallet.toLowerCase() !== req.walletAddress) {
+  if (typeof wallet !== 'string' || normalizeWalletAddress(wallet) !== req.walletAddress) {
     return res.status(403).json({ error: 'Wallet session does not match the requested support tickets.' });
   }
   db.all(
@@ -2775,7 +2999,7 @@ app.post('/api/user/tickets/:ticketId/reply', sensitiveLimiter, requireWalletSes
 
 app.get('/api/user/review', requireWalletSession, (req, res) => {
   const wallet = req.query.wallet;
-  if (typeof wallet !== 'string' || !ethers.isAddress(wallet) || wallet.toLowerCase() !== req.walletAddress) {
+  if (typeof wallet !== 'string' || normalizeWalletAddress(wallet) !== req.walletAddress) {
     return res.status(403).json({ error: 'Wallet session does not match the requested review.' });
   }
   db.all(
@@ -2840,7 +3064,7 @@ app.post('/api/user/reviews', sensitiveLimiter, requireWalletSession, (req, res)
                       [
                         `bpe_${crypto.randomBytes(10).toString('hex')}`,
                         req.walletAddress,
-                        req.walletAddress.toLowerCase(),
+                        req.walletAddress,
                         task.xp_reward,
                         task.points_reward
                       ],
@@ -3004,8 +3228,9 @@ app.get('/api/admin/support-staff', requireWalletSession, requireAdminSession, (
 
 app.post('/api/admin/support-staff/action', sensitiveLimiter, requireTradeSignature, requireAdminWallet, (req, res) => {
   const wallet = typeof req.body?.staff_wallet === 'string' ? req.body.staff_wallet.trim() : '';
+  const normalizedWallet = normalizeWalletAddress(wallet);
   const action = req.body?.action;
-  if (!ethers.isAddress(wallet) || !['ADD', 'REMOVE'].includes(action) ||
+  if (!normalizedWallet || !['ADD', 'REMOVE'].includes(action) ||
       (action === 'ADD' && req.body?.role !== 'SUPPORT')) {
     return res.status(400).json({ error: 'A valid wallet and the Support role are required.' });
   }
@@ -3015,7 +3240,7 @@ app.post('/api/admin/support-staff/action', sensitiveLimiter, requireTradeSignat
       const rollback = (status, error) => db.run('ROLLBACK', () => res.status(status).json({ error }));
       const persistAudit = () => db.run(
         'INSERT INTO support_staff_events (wallet_address, admin_wallet, action) VALUES (?, ?, ?)',
-        [wallet.toLowerCase(), req.walletAddress, action],
+        [normalizedWallet, req.walletAddress, action],
         auditErr => {
           if (auditErr) return rollback(500, 'Unable to record support staff audit event.');
           db.run('COMMIT', commitErr => {
@@ -3030,7 +3255,7 @@ app.post('/api/admin/support-staff/action', sensitiveLimiter, requireTradeSignat
            VALUES (?, 'SUPPORT', 1, ?, CURRENT_TIMESTAMP, ?, CURRENT_TIMESTAMP)
            ON CONFLICT(wallet_address) DO UPDATE SET role = 'SUPPORT', active = 1,
              updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP`,
-          [wallet.toLowerCase(), req.walletAddress, req.walletAddress],
+          [normalizedWallet, req.walletAddress, req.walletAddress],
           function(saveErr) {
             if (saveErr) return rollback(500, 'Unable to add support staff wallet.');
             persistAudit();
@@ -3039,8 +3264,9 @@ app.post('/api/admin/support-staff/action', sensitiveLimiter, requireTradeSignat
       }
       db.run(
         `UPDATE support_staff SET active = 0, updated_by = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE LOWER(wallet_address) = LOWER(?) AND active = 1`,
-        [req.walletAddress, wallet],
+         WHERE ${getWalletType(normalizedWallet) === 'SOLANA' ? 'wallet_address = ?' : 'LOWER(wallet_address) = LOWER(?)'}
+           AND active = 1`,
+        [req.walletAddress, normalizedWallet],
         function(removeErr) {
           if (removeErr) return rollback(500, 'Unable to remove support staff wallet.');
           if (this.changes !== 1) return rollback(404, 'Active support staff wallet not found.');
@@ -3224,7 +3450,7 @@ app.post('/api/admin/referrals/commission', sensitiveLimiter, requireTradeSignat
   const wallet = req.body?.user_wallet;
   const referralPct = Number(req.body?.referral_pct);
   const levelTwoPct = Number(req.body?.level_two_pct);
-  if (typeof wallet !== 'string' || !ethers.isAddress(wallet) ||
+  if (typeof wallet !== 'string' || !normalizeWalletAddress(wallet) ||
       !Number.isFinite(referralPct) || referralPct < 0 || referralPct > 100 ||
       !Number.isFinite(levelTwoPct) || levelTwoPct < 0 || levelTwoPct > 100) {
     return res.status(400).json({ error: 'Choose a valid user wallet and level-1 and level-2 rates from 0 to 100%.' });
@@ -3498,7 +3724,7 @@ app.post('/api/admin/battlepass/tasks/save', sensitiveLimiter, requireTradeSigna
 
 app.get('/api/user/referrals', requireWalletSession, (req, res) => {
   const wallet = req.query.wallet;
-  if (typeof wallet !== 'string' || wallet.toLowerCase() !== req.walletAddress) {
+  if (normalizeWalletAddress(wallet, req.walletType) !== req.walletAddress) {
     return res.status(403).json({ error: 'Wallet session does not match the requested referrals.' });
   }
 
@@ -3546,7 +3772,11 @@ app.get('/api/user/referrals', requireWalletSession, (req, res) => {
 app.post('/api/referrals/withdraw', sensitiveLimiter, requireTradeSignature, (req, res) => {
   const { wallet_address, amount } = req.body;
   const amountValue = Math.round(Number(amount) * 100) / 100;
-  if (!Number.isFinite(amountValue) || amountValue <= 0) {
+  const payoutChainId = Number(req.body?.payout_chain_id);
+  const payoutAsset = typeof req.body?.payout_asset === 'string' ? req.body.payout_asset.toUpperCase() : '';
+  if (normalizeWalletAddress(wallet_address, req.walletType) !== req.walletAddress ||
+      !Number.isFinite(amountValue) || amountValue <= 0 ||
+      !isValidPayoutSelection(req.walletType, payoutChainId, payoutAsset)) {
     return res.status(400).json({ error: "Invalid withdrawal parameters." });
   }
 
@@ -3597,9 +3827,10 @@ app.post('/api/referrals/withdraw', sensitiveLimiter, requireTradeSignature, (re
                     return rollback(409, 'Commission records no longer match the available withdrawal balance. Refresh and retry.');
                   }
                   db.run(
-                    `INSERT INTO referral_withdrawals (id, wallet_address, amount, status)
-                     VALUES (?, ?, ?, 'PENDING')`,
-                    [withdrawalId, wallet_address, amountValue],
+                    `INSERT INTO referral_withdrawals
+                     (id, wallet_address, amount, status, payout_chain_id, payout_asset)
+                     VALUES (?, ?, ?, 'PENDING', ?, ?)`,
+                    [withdrawalId, wallet_address, amountValue, payoutChainId, payoutAsset],
                     insertErr => {
                       if (insertErr) return rollback(500, 'Unable to record commission withdrawal.');
                       const saveAllocation = index => {
@@ -3664,7 +3895,7 @@ app.post('/api/promo/validate', sensitiveLimiter, (req, res) => {
 
 app.get('/api/accounts', requireWalletSession, (req, res) => {
   const wallet = req.query.wallet;
-  if (typeof wallet !== 'string' || !ethers.isAddress(wallet) || wallet.toLowerCase() !== req.walletAddress) {
+  if (typeof wallet !== 'string' || normalizeWalletAddress(wallet) !== req.walletAddress) {
     return res.status(403).json({ error: 'Wallet session does not match the requested accounts.' });
   }
 
@@ -3756,7 +3987,7 @@ app.get('/api/accounts/performance', requireWalletSession, (req, res) => {
 app.get('/api/accounts/details', requireWalletSession, (req, res) => {
   const accountId = req.query.account_id;
   const wallet = req.query.wallet;
-  if (!accountId || typeof wallet !== 'string' || !ethers.isAddress(wallet) || wallet.toLowerCase() !== req.walletAddress) {
+  if (!accountId || typeof wallet !== 'string' || normalizeWalletAddress(wallet) !== req.walletAddress) {
     return res.status(403).json({ error: 'Wallet session does not match the requested account.' });
   }
 
@@ -3919,6 +4150,7 @@ app.put('/api/accounts/:accountId/journal', sensitiveLimiter, requireWalletSessi
 // --- SECURE PURCHASE ENDPOINT (WITH MULTI-CHAIN ON-CHAIN VERIFICATION) ---
 app.post('/api/accounts/purchase', sensitiveLimiter, requireWalletSession, requireUserNotSuspended, async (req, res) => {
   const { wallet_address, plan_id, tx_hash, chain_id } = req.body;
+  const paymentAsset = typeof req.body?.payment_asset === 'string' ? req.body.payment_asset.toUpperCase() : 'USDT';
   const quantity = Number(req.body?.quantity ?? 1);
   const maxPurchaseQuantity = 10;
   const promoCode = typeof req.body?.promo_code === 'string' ? req.body.promo_code.trim().toUpperCase() : '';
@@ -3927,7 +4159,7 @@ app.post('/api/accounts/purchase', sensitiveLimiter, requireWalletSession, requi
       req.body?.simulated_funds_acknowledged !== true) {
     return res.status(400).json({ error: 'Confirm the current disclaimers and simulated-funds acknowledgement before purchasing.' });
   }
-  if (typeof wallet_address !== 'string' || !ethers.isAddress(wallet_address) ||
+  if (normalizeWalletAddress(wallet_address, req.walletType) !== req.walletAddress ||
       !Number.isInteger(Number(plan_id)) || Number(plan_id) <= 0 ||
       !Number.isInteger(quantity) || quantity < 1 || quantity > maxPurchaseQuantity ||
       (req.body?.promo_code != null && (typeof req.body.promo_code !== 'string' || req.body.promo_code.length > 32))) {
@@ -3980,20 +4212,45 @@ app.post('/api/accounts/purchase', sensitiveLimiter, requireWalletSession, requi
     }
     let normalizedTxHash;
     let purchaseChainId = 0;
+    let payerAddress = null;
     if (!isFreeRedemption) {
-      if (typeof tx_hash !== 'string' || !/^0x[0-9a-fA-F]{64}$/.test(tx_hash) ||
-          !Number.isInteger(Number(chain_id))) {
+      if (typeof tx_hash !== 'string' || !Number.isInteger(Number(chain_id)) ||
+          !['USDT', 'USDC'].includes(paymentAsset)) {
         return res.status(400).json({ error: 'A valid payment transaction and network are required.' });
       }
-      const verification = await verifyMultiChainPurchase(tx_hash, Number(chain_id), wallet_address, totalPrice, TREASURY_WALLET);
-      if (!verification.success) return res.status(400).json({ error: verification.error });
-      normalizedTxHash = tx_hash.toLowerCase();
       purchaseChainId = Number(chain_id);
+      let verification;
+      if (purchaseChainId === 101) {
+        const paymentWallet = req.body?.payment_wallet_address;
+        if (req.walletType !== 'SOLANA' ||
+            normalizeWalletAddress(paymentWallet, 'SOLANA') !== wallet_address) {
+          return res.status(403).json({ error: 'Solana payments are available only to the active Solana wallet.' });
+        }
+        if (!/^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(tx_hash)) {
+          return res.status(400).json({ error: 'A valid Solana transaction signature is required.' });
+        }
+        verification = await verifySolanaPurchase(tx_hash, paymentWallet, paymentAsset, totalPrice);
+        payerAddress = paymentWallet;
+      } else {
+        if (req.walletType !== 'EVM') {
+          return res.status(403).json({ error: 'EVM payments are available only to the active EVM wallet.' });
+        }
+        if (!/^0x[0-9a-fA-F]{64}$/.test(tx_hash)) {
+          return res.status(400).json({ error: 'A valid EVM payment transaction is required.' });
+        }
+        verification = await verifyMultiChainPurchase(
+          tx_hash, purchaseChainId, wallet_address, totalPrice, TREASURY_WALLET, paymentAsset
+        );
+        payerAddress = wallet_address;
+      }
+      if (!verification.success) return res.status(400).json({ error: verification.error });
+      normalizedTxHash = purchaseChainId === 101 ? tx_hash : tx_hash.toLowerCase();
     } else {
       normalizedTxHash = rewardCode
         ? `pass_${rewardCode.code.toLowerCase()}`
         : `free_${crypto.randomBytes(16).toString('hex')}`;
     }
+    const recordedPaymentAsset = isFreeRedemption ? 'FREE' : paymentAsset;
 
     db.run('INSERT OR IGNORE INTO users (wallet_address) VALUES (?)', [wallet_address], (userErr) => {
       if (userErr) return res.status(500).json({ error: 'Unable to prepare the purchasing account.' });
@@ -4020,9 +4277,13 @@ app.post('/api/accounts/purchase', sensitiveLimiter, requireWalletSession, requi
                     return rollback(403, `This user account is suspended by an administrator${user.admin_suspend_reason ? `: ${user.admin_suspend_reason}` : '.'}`);
                   }
                   db.run(
-                    `INSERT INTO purchases (tx_hash, chain_id, wallet_address, account_id, quantity, amount_usdt)
-                     VALUES (?, ?, ?, ?, ?, ?)`,
-                    [normalizedTxHash, purchaseChainId, wallet_address, accountId, quantity, totalPrice],
+                    `INSERT INTO purchases (
+                       tx_hash, chain_id, wallet_address, account_id, quantity, amount_usdt, payment_asset, payer_address
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [
+                      normalizedTxHash, purchaseChainId, wallet_address, accountId, quantity,
+                      totalPrice, recordedPaymentAsset, payerAddress
+                    ],
                     (purchaseErr) => {
                       if (purchaseErr) return rollback(409, 'This transaction or discount code has already been used.');
                   const provisionAccounts = (index, onComplete) => {
@@ -4171,9 +4432,13 @@ app.post('/api/accounts/purchase', sensitiveLimiter, requireWalletSession, requi
 app.post('/api/withdrawals/request', sensitiveLimiter, requireTradeSignature, requireUserNotSuspended, (req, res) => {
     const { account_id, wallet_address, amount } = req.body;
     const amountValue = Math.round(Number(amount) * 100) / 100;
+    const payoutChainId = Number(req.body?.payout_chain_id);
+    const payoutAsset = typeof req.body?.payout_asset === 'string' ? req.body.payout_asset.toUpperCase() : '';
     const userIp = req.ip;
 
-    if (!account_id || !Number.isFinite(amountValue) || amountValue <= 0) {
+    if (normalizeWalletAddress(wallet_address, req.walletType) !== req.walletAddress ||
+        !account_id || !Number.isFinite(amountValue) || amountValue <= 0 ||
+        !isValidPayoutSelection(req.walletType, payoutChainId, payoutAsset)) {
         return res.status(400).json({ success: false, error: "Invalid request parameters." });
     }
 
@@ -4221,9 +4486,13 @@ app.post('/api/withdrawals/request', sensitiveLimiter, requireTradeSignature, re
               const { gross, userAmount, adminShare } = splitWithdrawal(amountValue);
               db.run(
                 `INSERT INTO withdrawals
-                 (id, account_id, wallet_address, type, plan_name, amount, user_amount, admin_share, user_ip, status, funds_deducted, created_at)
-                 VALUES (?, ?, ?, 'PROFIT_SPLIT', ?, ?, ?, ?, ?, 'PENDING', 0, datetime('now'))`,
-                [withdrawalId, account_id, wallet_address, account.plan_name, gross, userAmount, adminShare, userIp],
+                 (id, account_id, wallet_address, type, plan_name, amount, user_amount, admin_share,
+                  user_ip, payout_chain_id, payout_asset, status, funds_deducted, created_at)
+                 VALUES (?, ?, ?, 'PROFIT_SPLIT', ?, ?, ?, ?, ?, ?, ?, 'PENDING', 0, datetime('now'))`,
+                [
+                  withdrawalId, account_id, wallet_address, account.plan_name, gross,
+                  userAmount, adminShare, userIp, payoutChainId, payoutAsset
+                ],
                 (insertErr) => {
                   if (insertErr) return rollback(500, 'Unable to record withdrawal request.');
                   db.run('COMMIT', (commitErr) => {
@@ -4254,7 +4523,8 @@ function loadAdminWithdrawals(req, res) {
      COALESCE(u.username, '') AS username,
      p.max_drawdown_pct,
      COALESCE(w.user_amount, ROUND(w.amount * 0.9, 2)) AS user_amount,
-     COALESCE(w.admin_share, ROUND(w.amount - ROUND(w.amount * 0.9, 2), 2)) AS admin_share
+     COALESCE(w.admin_share, ROUND(w.amount - ROUND(w.amount * 0.9, 2), 2)) AS admin_share,
+     w.payout_chain_id, COALESCE(w.payout_asset, 'USDT') AS payout_asset
      FROM withdrawals w 
      JOIN accounts a ON w.account_id = a.id 
      JOIN plans p ON a.plan_id = p.id
@@ -4265,7 +4535,8 @@ function loadAdminWithdrawals(req, res) {
       NULL AS initial_balance, NULL AS high_water_mark, NULL AS admin_frozen,
       NULL AS admin_freeze_reason,
       COALESCE((SELECT username FROM users WHERE LOWER(wallet_address) = LOWER(referral_withdrawals.wallet_address)), '') AS username,
-      NULL AS max_drawdown_pct, amount AS user_amount, 0 AS admin_share
+      NULL AS max_drawdown_pct, amount AS user_amount, 0 AS admin_share,
+      payout_chain_id, COALESCE(payout_asset, 'USDT') AS payout_asset
      FROM referral_withdrawals
      ORDER BY created_at DESC`,
     [],
@@ -4520,15 +4791,16 @@ app.post('/api/admin/users/search', sensitiveLimiter, requireTradeSignature, req
 
 app.post('/api/admin/users/action', sensitiveLimiter, requireTradeSignature, requireAdminWallet, (req, res) => {
   const { user_wallet: wallet, action } = req.body;
+  const normalizedWallet = normalizeWalletAddress(wallet);
   const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
-  if (typeof wallet !== 'string' || !ethers.isAddress(wallet) ||
+  if (!normalizedWallet ||
       !['SUSPEND', 'RESTORE', 'CLEAR_IP_SOFT_LOCK'].includes(action) ||
       (action === 'SUSPEND' && (!reason || reason.length > 500))) {
     return res.status(400).json({ error: 'Choose a valid user, action, and a suspension reason (up to 500 characters).' });
   }
   if (action === 'CLEAR_IP_SOFT_LOCK') {
     if (reason.length > 500) return res.status(400).json({ error: 'The review note must be 500 characters or fewer.' });
-    return clearWalletSecurityLock(db, wallet, req.walletAddress, reason, (clearErr, result) => {
+    return clearWalletSecurityLock(db, normalizedWallet, req.walletAddress, reason, (clearErr, result) => {
       if (clearErr) {
         console.error('Unable to clear wallet security lock:', clearErr.message);
         return res.status(500).json({ error: 'Unable to clear wallet security lock.' });
@@ -4546,14 +4818,14 @@ app.post('/api/admin/users/action', sensitiveLimiter, requireTradeSignature, req
         `UPDATE users SET admin_suspended = ?, admin_suspend_reason = ?, admin_suspended_by = ?,
            admin_suspended_at = CASE WHEN ? = 1 THEN CURRENT_TIMESTAMP ELSE NULL END
          WHERE LOWER(wallet_address) = LOWER(?)`,
-        [suspended, suspended ? reason : null, suspended ? req.body.wallet_address : null, suspended, wallet],
+        [suspended, suspended ? reason : null, suspended ? req.body.wallet_address : null, suspended, normalizedWallet],
         function(updateErr) {
           if (updateErr) return rollback(500, 'Unable to update user suspension.');
           if (this.changes !== 1) return rollback(404, 'User not found.');
           db.run(
             `INSERT INTO user_admin_actions (wallet_address, admin_wallet, action, reason)
              VALUES (?, ?, ?, ?)`,
-            [wallet.toLowerCase(), req.body.wallet_address.toLowerCase(), action, suspended ? reason : null],
+            [normalizedWallet, req.body.wallet_address.toLowerCase(), action, suspended ? reason : null],
             insertErr => {
               if (insertErr) return rollback(500, 'Unable to record the user suspension audit event.');
               db.run('COMMIT', commitErr => {
@@ -4575,10 +4847,11 @@ app.post('/api/admin/users/action', sensitiveLimiter, requireTradeSignature, req
 
 app.post('/api/admin/users/accounts', sensitiveLimiter, requireTradeSignature, requireAdminWallet, (req, res) => {
   const wallet = req.body?.user_wallet;
-  if (typeof wallet !== 'string' || !ethers.isAddress(wallet)) {
+  const normalizedWallet = normalizeWalletAddress(wallet);
+  if (!normalizedWallet) {
     return res.status(400).json({ error: 'Choose a valid user wallet.' });
   }
-  loadAdminUserSecurity(wallet, (securityErr, security) => {
+  loadAdminUserSecurity(normalizedWallet, (securityErr, security) => {
     if (securityErr) return res.status(securityErr.message === 'User not found.' ? 404 : 500).json({ error: "Unable to load this user's security details." });
     db.all(
       `SELECT a.id, a.wallet_address, a.plan_id, a.initial_balance, a.current_balance, a.current_equity,
@@ -5831,7 +6104,7 @@ app.post('/api/chat/messages', sensitiveLimiter, requireWalletSession, requireUs
 app.get('/api/trades/active', requireWalletSession, (req, res) => {
   const accountId = req.query.account_id;
   const wallet = req.query.wallet;
-  if (!accountId || typeof wallet !== 'string' || !ethers.isAddress(wallet) || wallet.toLowerCase() !== req.walletAddress) {
+  if (!accountId || typeof wallet !== 'string' || normalizeWalletAddress(wallet) !== req.walletAddress) {
     return res.status(403).json({ error: 'Wallet session does not match the requested trades.' });
   }
 

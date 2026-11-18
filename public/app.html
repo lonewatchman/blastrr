@@ -15,6 +15,20 @@
         <p class="wallet-login-eyebrow">BLASTRR ACCOUNT ACCESS</p>
         <h1 id="wallet-login-title">Sign in to continue</h1>
         <p class="wallet-login-copy">Sign a message with your wallet to unlock your trading dashboard.</p>
+        <div class="form-group">
+            <label for="wallet-login-type">Wallet network</label>
+            <select id="wallet-login-type">
+                <option value="EVM">EVM wallet</option>
+                <option value="SOLANA">Solana wallet</option>
+            </select>
+        </div>
+        <div class="form-group" id="wallet-login-solana-group" hidden>
+            <label for="wallet-login-solana-provider">Solana wallet</label>
+            <select id="wallet-login-solana-provider">
+                <option value="phantom">Phantom</option>
+                <option value="solflare">Solflare</option>
+            </select>
+        </div>
         <button id="wallet-login-button" class="wallet-login-button" type="button" onclick="connectWallet()">Connect wallet &amp; sign in</button>
         <p id="wallet-login-status" class="wallet-login-status" role="status" aria-live="polite"></p>
     </section>
@@ -113,6 +127,18 @@
                 <div id="wallet-menu-panel" class="wallet-menu-panel" hidden>
                     <p class="wallet-menu-heading">Connected accounts</p>
                     <div id="wallet-menu-accounts" class="wallet-menu-accounts"></div>
+                    <label class="wallet-menu-heading" for="wallet-add-type">Add wallet</label>
+                    <select id="wallet-add-type">
+                        <option value="EVM">EVM wallet</option>
+                        <option value="SOLANA">Solana wallet</option>
+                    </select>
+                    <div class="form-group" id="wallet-add-solana-group" hidden>
+                        <label for="wallet-add-solana-provider">Solana wallet</label>
+                        <select id="wallet-add-solana-provider">
+                            <option value="phantom">Phantom</option>
+                            <option value="solflare">Solflare</option>
+                        </select>
+                    </div>
                     <button id="connect-new-btn" class="wallet-menu-action" type="button" onclick="closeWalletMenu(); connectNewWallet()">＋ Add account</button>
                     <div class="wallet-menu-divider" aria-hidden="true"></div>
                     <button id="disconnect-btn" class="wallet-menu-action wallet-menu-logout" type="button" onclick="closeWalletMenu(); disconnectWallet()">Log out</button>
@@ -353,6 +379,14 @@
             <div class="battlepass-page-heading app-page-heading">
                 <div><span class="battlepass-eyebrow">YOUR ACCOUNTS</span><h1>Account portfolio</h1></div>
                 <p class="support-note">Review account performance, limits, and status. Expand an account for trade history and daily results.</p>
+            </div>
+            <div class="card payout-preference-card">
+                <div class="card-title">Payout network</div>
+                <p class="support-note">Payout options follow the selected wallet type. EVM wallets can only request EVM payouts; Solana wallets can only request Solana payouts.</p>
+                <div class="grid-2">
+                    <div class="form-group"><label for="account-payout-network">Network</label><select id="account-payout-network"></select></div>
+                    <div class="form-group"><label for="account-payout-asset">Asset</label><select id="account-payout-asset"></select></div>
+                </div>
             </div>
             <section class="account-performance-panel" aria-labelledby="accounts-performance-heading">
                 <div class="account-performance-panel-heading">
@@ -622,6 +656,10 @@
                             <button class="btn-wallet" style="padding: 6px 14px; font-size: 12px; background: #059669;" onclick="requestCommissionWithdrawal()">Withdraw Commissions</button>
                         </div>
                     </div>
+                    <div class="payout-preference-card">
+                        <div class="form-group"><label for="referral-payout-network">Referral payout network</label><select id="referral-payout-network"></select></div>
+                        <div class="form-group"><label for="referral-payout-asset">Referral payout asset</label><select id="referral-payout-asset"></select></div>
+                    </div>
 
                     <div class="card-title profile-history-heading">Commission earnings history</div>
                     <div id="ref-transactions-list" class="profile-commission-list">
@@ -785,7 +823,7 @@
             </div>
             <div class="plans-purchase-tools card">
                 <div class="form-group">
-                    <label for="payment-chain-select">Payment network · USDT</label>
+                    <label for="payment-chain-select">Payment network</label>
                     <select id="payment-chain-select">
                         <option value="1">Ethereum Mainnet</option>
                         <option value="8453">Base</option>
@@ -793,6 +831,21 @@
                         <option value="43114">Avalanche C-Chain</option>
                         <option value="56">BNB Smart Chain (BSC)</option>
                         <option value="448000">NullNet Private EVM</option>
+                        <option value="101">Solana Mainnet</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="payment-asset-select">Payment asset</label>
+                    <select id="payment-asset-select">
+                        <option value="USDT">USDT</option>
+                        <option value="USDC">USDC</option>
+                    </select>
+                </div>
+                <div class="form-group" id="solana-wallet-group" hidden>
+                    <label for="solana-wallet-select">Solana wallet</label>
+                    <select id="solana-wallet-select">
+                        <option value="phantom">Phantom</option>
+                        <option value="solflare">Solflare</option>
                     </select>
                 </div>
 
@@ -863,14 +916,14 @@
             <div class="admin-dashboard-grid" aria-label="Operations summary">
                 <article class="admin-dashboard-metric"><span>Active wallet sessions</span><strong id="admin-active-wallets">—</strong></article>
                 <article class="admin-dashboard-metric"><span>Wallets connected (tracked)</span><strong id="admin-all-time-wallets">—</strong></article>
-                <article class="admin-dashboard-metric"><span>Verified sales</span><strong id="admin-sales-total">—</strong><small id="admin-sales-count"></small></article>
+                <article class="admin-dashboard-metric"><span>Verified sales (USDT + USDC)</span><strong id="admin-sales-total">—</strong><small id="admin-sales-count"></small></article>
                 <article class="admin-dashboard-metric"><span>Paid withdrawals</span><strong id="admin-paid-out-total">—</strong><small id="admin-paid-out-count"></small></article>
                 <article class="admin-dashboard-metric"><span>Withdrawal requests</span><strong id="admin-withdrawal-count">—</strong></article>
                 <article class="admin-dashboard-metric"><span>Pending withdrawals</span><strong id="admin-pending-out-total">—</strong><small id="admin-pending-out-count"></small></article>
                 <article class="admin-dashboard-metric"><span>Open support tickets</span><strong id="admin-open-tickets">—</strong></article>
                 <article class="admin-dashboard-metric"><span>Pending reviews</span><strong id="admin-pending-reviews">—</strong></article>
             </div>
-            <p id="admin-sales-caveat" class="support-note" hidden>Some older verified purchases predate exact amount tracking and are excluded from the sales total.</p>
+            <p id="admin-sales-caveat" class="support-note" hidden>Some older verified purchases predate exact amount tracking and are excluded from the sales total. Stablecoin amounts are shown at face value and do not account for depegs.</p>
             <p class="support-note">All-time wallet counts include existing profile records and successful signed sessions recorded from this release onward; older sessions outside retained IP history cannot be reconstructed.</p>
             <div class="card admin-operations-activity">
                 <div class="card-title">Live operations activity</div>
@@ -1136,6 +1189,7 @@
 
     <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
     <script src="/js/chartIndicators.js?v=20261115-multi-account-checkout" defer></script>
-    <script src="/js/app.js?v=20261118-chart-drawings" defer></script>
+    <script src="https://unpkg.com/@solana/web3.js@1.98.4/lib/index.iife.min.js" defer></script>
+    <script src="/js/app.js?v=20261119-wallet-types" defer></script>
 </body>
 </html>

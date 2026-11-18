@@ -380,8 +380,10 @@ test('terminal stays black and locked until a signed wallet session is establish
   assert.match(appJs, /updatePlanPurchaseTotal\(planId, unitPrice\)/);
   assert.match(appJs, /quantity < 1 \|\| quantity > 10/);
   assert.match(serverJs, /const quantity = Number\(req\.body\?\.quantity \?\? 1\)/);
-  assert.match(serverJs, /verifyMultiChainPurchase\(tx_hash, Number\(chain_id\), wallet_address, totalPrice, TREASURY_WALLET\)/);
-  assert.match(serverJs, /INSERT INTO purchases \(tx_hash, chain_id, wallet_address, account_id, quantity, amount_usdt\)/);
+  assert.match(serverJs, /verifyMultiChainPurchase\([\s\S]*?wallet_address, totalPrice, TREASURY_WALLET, paymentAsset\)/);
+  assert.match(serverJs, /INSERT INTO purchases \([\s\S]*?payment_asset, payer_address/);
+  assert.match(serverJs, /if \(req\.walletType !== 'SOLANA'[\s\S]*?paymentWallet, 'SOLANA'\) !== wallet_address/);
+  assert.match(serverJs, /if \(req\.walletType !== 'EVM'\)[\s\S]*?EVM payments are available only to the active EVM wallet/);
   assert.match(serverJs, /account_ids: accountIds/);
   assert.match(appJs, /disclaimer_version: DISCLAIMER_VERSION,[\s\S]*?terms_accepted: true,[\s\S]*?simulated_funds_acknowledged: true/);
   assert.match(serverJs, /app\.get\('\/api\/user\/disclaimer-consent', requireWalletSession/);
@@ -392,7 +394,9 @@ test('terminal stays black and locked until a signed wallet session is establish
 });
 
 test('wallet switcher menu lists connected accounts before add and logout actions', () => {
-  assert.match(appJs, /availableWallets\.forEach\(address => \{[\s\S]*?accounts\.append\(button\);[\s\S]*?function updateWalletUIState/);
+  assert.match(appJs, /availableWallets\.forEach\(wallet => \{[\s\S]*?accounts\.append\(button\);[\s\S]*?function updateWalletUIState/);
+  assert.match(appJs, /getConnectedWalletOwnerKey\(\)[\s\S]*?solana:\$\{connectedWallet\}/);
+  assert.match(appJs, /async function switchToAvailableWallet\(wallet\)[\s\S]*?await onWalletSwitched\(wallet\.address, 'SOLANA', wallet\.provider\)/);
   assert.match(appJs, /function toggleWalletMenu\(\)/);
   assert.match(appJs, /function closeWalletMenu\(\)/);
   assert.match(appHtml, /id="wallet-menu-accounts"[\s\S]*?id="connect-new-btn"[\s\S]*?id="disconnect-btn"/);
@@ -463,9 +467,9 @@ test('homepage and terminal buttons use restrained neutral borders', () => {
 });
 
 test('NullNet checkout uses the correct chain ID and matching wallet and verification RPC settings', () => {
-  assert.match(appJs, /448000:\s*\{[\s\S]*?chainIdHex: "0x6d600"[\s\S]*?rpcUrl: "https:\/\/rpc\.lunul\.org"[\s\S]*?nativeCurrency: \{ name: "LUN", symbol: "LUN", decimals: 18 \}[\s\S]*?usdtAddress: "0x7ec3659A8225ED474D7c662126616aE08545C29b",[\s\S]*?decimals: 18/);
-  assert.match(serverJs, /448000:\s*\{[\s\S]*?chainIdHex: "0x6d600"[\s\S]*?rpcUrl: "https:\/\/rpc\.lunul\.org"[\s\S]*?decimals: 18/);
-  assert.match(appJs, /const rawAmount = toTokenUnits\(amount, chainConfig\.decimals\)/);
+  assert.match(appJs, /448000:\s*\{[\s\S]*?chainIdHex: "0x6d600"[\s\S]*?USDT: \{ address: "0x7ec3659A8225ED474D7c662126616aE08545C29b", decimals: 18 \}/);
+  assert.match(serverJs, /448000:\s*\{[\s\S]*?chainIdHex: "0x6d600"[\s\S]*?rpcUrl: "https:\/\/rpc\.lunul\.org"[\s\S]*?USDT: \{ address: "0x7ec3659A8225ED474D7c662126616aE08545C29b", decimals: 18 \}/);
+  assert.match(appJs, /const rawAmount = toTokenUnits\(amount, tokenConfig\.decimals\)/);
   assert.match(serverJs, /rawValue >= expectedRawValue/);
   assert.match(appJs, /method: 'wallet_addEthereumChain'/);
   assert.match(appJs, /const activeChainId = BigInt\(await provider\.request\(\{ method: 'eth_chainId' \}\)\)/);
@@ -473,12 +477,12 @@ test('NullNet checkout uses the correct chain ID and matching wallet and verific
 
 test('BNB Smart Chain checkout uses BEP-20 USDT and is listed on the payment surfaces', () => {
   const bscUsdt = '0x55d398326f99059fF775485246999027B3197955';
-  assert.match(appJs, /56:\s*\{[\s\S]*?name: "BNB Smart Chain"[\s\S]*?chainIdHex: "0x38"[\s\S]*?rpcUrl: "https:\/\/bsc-dataseed\.binance\.org"[\s\S]*?nativeCurrency: \{ name: "BNB", symbol: "BNB", decimals: 18 \}[\s\S]*?usdtAddress: "0x55d398326f99059fF775485246999027B3197955"[\s\S]*?decimals: 18/);
-  assert.match(serverJs, /56:\s*\{[\s\S]*?name: "BNB Smart Chain"[\s\S]*?chainIdHex: "0x38"[\s\S]*?usdtAddress: "0x55d398326f99059fF775485246999027B3197955"[\s\S]*?decimals: 18/);
+  assert.match(appJs, /56:\s*\{[\s\S]*?name: "BNB Smart Chain"[\s\S]*?chainIdHex: "0x38"[\s\S]*?USDT: \{ address: "0x55d398326f99059fF775485246999027B3197955", decimals: 18 \}/);
+  assert.match(serverJs, /56:\s*\{[\s\S]*?name: "BNB Smart Chain"[\s\S]*?chainIdHex: "0x38"[\s\S]*?rpcUrl: "https:\/\/bsc-dataseed\.binance\.org"[\s\S]*?USDT: \{ address: "0x55d398326f99059fF775485246999027B3197955", decimals: 18 \}/);
   assert.match(appHtml, /<option value="56">BNB Smart Chain \(BSC\)<\/option>/);
   assert.ok(landingHtml.includes('>BNB Smart Chain</b><small>BEP-20</small>'));
-  assert.match(landingHtml, /Six networks\./);
-  assert.ok(landingHtml.includes('BNB Smart Chain or NullNet'));
+  assert.match(landingHtml, /Seven networks\./);
+  assert.match(landingHtml, /USDC is available only on networks with the configured official token/);
   assert.equal((appJs.match(new RegExp(bscUsdt, 'g')) || []).length, 1);
 });
 

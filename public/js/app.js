@@ -33,7 +33,10 @@ const CHART_INDICATOR_DEFINITIONS = Object.freeze({
     OBV: { label: 'On-balance volume', parameters: [] }
 });
 let connectedWallet = null;
+        let connectedWalletType = 'EVM';
+        let connectedSolanaProviderName = null;
         let availableWallets = [];
+        const solanaProviderListeners = new WeakSet();
         let userAccounts = [];
         const accountProgressMetrics = new Map();
         let showPermanentlyLockedPortfolioAccounts = false;
@@ -156,7 +159,15 @@ let connectedWallet = null;
             docs: 'Docs'
         };
         
-        const TREASURY_WALLET = "0xFBD3B9bA404f590b9A7b35B72104bEff9DEa5503";
+        const TREASURY_WALLET = "0x9c19edeba86b214db5b3d21da9416d5e5568365b";
+        const SOLANA_TREASURY_WALLET = 'A3AVrbzCYzqKEkBR7pDQGYgnAbmBF9qNMQDX84QpuRZx';
+        const SOLANA_TOKEN_PROGRAM_ID = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+        const SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
+        const SOLANA_TOKENS = {
+            USDT: { address: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', decimals: 6 },
+            USDC: { address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', decimals: 6 }
+        };
+        const SOLANA_RPC_URL = 'https://api.mainnet-beta.solana.com';
         const DISCLAIMER_VERSION = '2026-11-17-v2';
 
         function escapeHTML(value) {
@@ -220,27 +231,158 @@ let connectedWallet = null;
         }
 
         const SUPPORTED_EVM_CHAINS = {
-            1: { name: "Ethereum Mainnet", chainIdHex: "0x1", usdtAddress: "0xdac17f958d2ee523a2206206994597c13d831ec7", decimals: 6 },
-            8453: { name: "Base", chainIdHex: "0x2105", usdtAddress: "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2", decimals: 6 },
-            137: { name: "Polygon PoS", chainIdHex: "0x89", usdtAddress: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", decimals: 6 },
-            43114: { name: "Avalanche C-Chain", chainIdHex: "0xa86a", usdtAddress: "0x9702230a8ea53601f5cd2dc00fdbc13d4df4a8c7", decimals: 6 },
+            1: {
+                name: "Ethereum Mainnet", chainIdHex: "0x1",
+                tokens: {
+                    USDT: { address: "0xdac17f958d2ee523a2206206994597c13d831ec7", decimals: 6 },
+                    USDC: { address: "0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", decimals: 6 }
+                }
+            },
+            8453: {
+                name: "Base", chainIdHex: "0x2105",
+                tokens: {
+                    USDT: { address: "0xfde4c96c8593536e31f229ea8f37b2ada2699bb2", decimals: 6 },
+                    USDC: { address: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913", decimals: 6 }
+                }
+            },
+            137: {
+                name: "Polygon PoS", chainIdHex: "0x89",
+                tokens: {
+                    USDT: { address: "0xc2132d05d31c914a87c6611c10748aeb04b58e8f", decimals: 6 },
+                    USDC: { address: "0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", decimals: 6 }
+                }
+            },
+            43114: {
+                name: "Avalanche C-Chain", chainIdHex: "0xa86a",
+                tokens: {
+                    USDT: { address: "0x9702230a8ea53601f5cd2dc00fdbc13d4df4a8c7", decimals: 6 },
+                    USDC: { address: "0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E", decimals: 6 }
+                }
+            },
             56: {
                 name: "BNB Smart Chain",
                 chainIdHex: "0x38",
                 rpcUrl: "https://bsc-dataseed.binance.org",
                 nativeCurrency: { name: "BNB", symbol: "BNB", decimals: 18 },
-                usdtAddress: "0x55d398326f99059fF775485246999027B3197955",
-                decimals: 18
+                tokens: {
+                    USDT: { address: "0x55d398326f99059fF775485246999027B3197955", decimals: 18 }
+                }
             },
             448000: {
                 name: "NullNet Private EVM",
                 chainIdHex: "0x6d600",
                 rpcUrl: "https://rpc.lunul.org",
                 nativeCurrency: { name: "LUN", symbol: "LUN", decimals: 18 },
-                usdtAddress: "0x7ec3659A8225ED474D7c662126616aE08545C29b",
-                decimals: 18
+                tokens: {
+                    USDT: { address: "0x7ec3659A8225ED474D7c662126616aE08545C29b", decimals: 18 }
+                }
             }
         };
+
+        function updatePaymentAssetOptions() {
+            const networkSelect = document.getElementById('payment-chain-select');
+            const assetSelect = document.getElementById('payment-asset-select');
+            const solanaWalletGroup = document.getElementById('solana-wallet-group');
+            if (!networkSelect || !assetSelect) return;
+            const isSolana = networkSelect.value === '101';
+            const tokens = isSolana ? SOLANA_TOKENS : SUPPORTED_EVM_CHAINS[Number(networkSelect.value)]?.tokens || {};
+            const selectedAsset = assetSelect.value;
+            assetSelect.innerHTML = Object.keys(tokens)
+                .map(symbol => `<option value="${symbol}">${symbol}</option>`)
+                .join('');
+            assetSelect.value = tokens[selectedAsset] ? selectedAsset : Object.keys(tokens)[0] || '';
+            if (solanaWalletGroup) solanaWalletGroup.hidden = !isSolana;
+        }
+
+        function getSolanaWalletProvider(walletName) {
+            if (walletName === 'solflare') {
+                return window.solflare?.isSolflare ? window.solflare : null;
+            }
+            return window.phantom?.solana?.isPhantom
+                ? window.phantom.solana
+                : window.solana?.isPhantom
+                    ? window.solana
+                    : null;
+        }
+
+        function addAvailableWallet(wallet) {
+            const key = wallet.type === 'EVM' ? wallet.address.toLowerCase() : wallet.address;
+            const existingIndex = availableWallets.findIndex(item =>
+                (item.type === 'EVM' ? item.address.toLowerCase() : item.address) === key
+            );
+            if (existingIndex >= 0) availableWallets[existingIndex] = wallet;
+            else availableWallets.push(wallet);
+            updateWalletDropdown();
+        }
+
+        function updateWalletConnectionControls() {
+            const loginType = document.getElementById('wallet-login-type')?.value || 'EVM';
+            const loginSolanaGroup = document.getElementById('wallet-login-solana-group');
+            const addType = document.getElementById('wallet-add-type')?.value || 'EVM';
+            const addSolanaGroup = document.getElementById('wallet-add-solana-group');
+            if (loginSolanaGroup) loginSolanaGroup.hidden = loginType !== 'SOLANA';
+            if (addSolanaGroup) addSolanaGroup.hidden = addType !== 'SOLANA';
+        }
+
+        function updatePayoutOptions(prefix) {
+            const networkSelect = document.getElementById(`${prefix}-payout-network`);
+            const assetSelect = document.getElementById(`${prefix}-payout-asset`);
+            if (!networkSelect || !assetSelect) return;
+            const isSolana = connectedWalletType === 'SOLANA';
+            const networks = isSolana
+                ? [{ id: 101, name: 'Solana Mainnet', tokens: SOLANA_TOKENS }]
+                : Object.entries(SUPPORTED_EVM_CHAINS).map(([id, config]) => ({
+                    id: Number(id),
+                    name: config.name,
+                    tokens: config.tokens
+                }));
+            const selectedNetwork = Number(networkSelect.value);
+            networkSelect.replaceChildren(...networks.map(network =>
+                new Option(network.name, String(network.id))
+            ));
+            networkSelect.value = networks.some(network => network.id === selectedNetwork)
+                ? String(selectedNetwork)
+                : String(networks[0]?.id || '');
+            const activeNetwork = networks.find(network => String(network.id) === networkSelect.value);
+            const selectedAsset = assetSelect.value;
+            assetSelect.replaceChildren(...Object.keys(activeNetwork?.tokens || {}).map(symbol =>
+                new Option(symbol, symbol)
+            ));
+            assetSelect.value = activeNetwork?.tokens?.[selectedAsset] ? selectedAsset : assetSelect.options[0]?.value || '';
+            networkSelect.disabled = isSolana;
+        }
+
+        function updateWalletNetworkOptions() {
+            const networkSelect = document.getElementById('payment-chain-select');
+            if (!networkSelect) return;
+            for (const option of networkSelect.options) {
+                const isSolanaOption = option.value === '101';
+                option.hidden = connectedWalletType === 'SOLANA' ? !isSolanaOption : isSolanaOption;
+                option.disabled = option.hidden;
+            }
+            const expectedNetwork = connectedWalletType === 'SOLANA' ? '101' : '1';
+            if (networkSelect.selectedOptions[0]?.disabled) networkSelect.value = expectedNetwork;
+            updatePaymentAssetOptions();
+        }
+
+        function getSelectedPayoutOptions(prefix) {
+            const payoutChainId = Number(document.getElementById(`${prefix}-payout-network`)?.value);
+            const payoutAsset = document.getElementById(`${prefix}-payout-asset`)?.value || '';
+            const supportedTokens = payoutChainId === 101
+                ? (connectedWalletType === 'SOLANA' ? SOLANA_TOKENS : {})
+                : (connectedWalletType === 'EVM' ? SUPPORTED_EVM_CHAINS[payoutChainId]?.tokens || {} : {});
+            if (!supportedTokens[payoutAsset]) {
+                throw new Error('Choose a supported payout network and asset for the active wallet.');
+            }
+            return { payout_chain_id: payoutChainId, payout_asset: payoutAsset };
+        }
+
+        function getConnectedWalletOwnerKey() {
+            if (!connectedWallet) return null;
+            return connectedWalletType === 'SOLANA'
+                ? `solana:${connectedWallet}`
+                : connectedWallet.toLowerCase();
+        }
 
         function toTokenUnits(amount, decimals) {
             const match = String(amount).match(/^(\d+)(?:\.(\d+))?$/);
@@ -291,6 +433,15 @@ let connectedWallet = null;
         window.addEventListener('DOMContentLoaded', async () => {
             await loadMaintenanceStatus();
             setInterval(loadMaintenanceStatus, 30000);
+            updatePaymentAssetOptions();
+            document.getElementById('payment-chain-select')?.addEventListener('change', updatePaymentAssetOptions);
+            updateWalletConnectionControls();
+            updatePayoutOptions('account');
+            updatePayoutOptions('referral');
+            document.getElementById('wallet-login-type')?.addEventListener('change', updateWalletConnectionControls);
+            document.getElementById('wallet-add-type')?.addEventListener('change', updateWalletConnectionControls);
+            document.getElementById('account-payout-network')?.addEventListener('change', () => updatePayoutOptions('account'));
+            document.getElementById('referral-payout-network')?.addEventListener('change', () => updatePayoutOptions('referral'));
             const disclaimerScrollArea = document.getElementById('disclaimer-scroll-area');
             disclaimerScrollArea?.addEventListener('scroll', updateDisclaimerScrollState);
             document.getElementById('disclaimer-accept-terms')?.addEventListener('change', updateDisclaimerContinueState);
@@ -375,10 +526,14 @@ let connectedWallet = null;
             const provider = getProvider();
             if (provider?.on) {
                 provider.on('accountsChanged', (accounts) => {
+                    if (connectedWalletType !== 'EVM') return;
                     if (accounts && accounts.length > 0) {
-                        availableWallets = accounts;
+                        availableWallets = [
+                            ...availableWallets.filter(item => item.type !== 'EVM'),
+                            ...accounts.map(address => ({ address, type: 'EVM' }))
+                        ];
                         updateWalletDropdown();
-                        onWalletSwitched(accounts[0]);
+                        onWalletSwitched(accounts[0], 'EVM');
                     } else {
                         disconnectWallet();
                     }
@@ -450,7 +605,7 @@ let connectedWallet = null;
 
         function switchTradingMarketMode(mode) {
             if (!dashboardAuthenticated || !walletSessionToken ||
-                walletSessionOwner !== connectedWallet?.toLowerCase() ||
+                walletSessionOwner !== getConnectedWalletOwnerKey() ||
                 walletSessionExpiresAt <= Date.now()) {
                 lockDashboard();
                 return;
@@ -651,7 +806,7 @@ let connectedWallet = null;
         }
 
         function chartDrawingStorageKey(source, pair, timeframe) {
-            const wallet = connectedWallet?.toLowerCase() || 'guest';
+            const wallet = getConnectedWalletOwnerKey() || 'guest';
             return `blastrr.chart-drawings.v1:${wallet}:${source}:${pair}:${timeframe}`;
         }
 
@@ -1998,7 +2153,7 @@ let connectedWallet = null;
 
         function switchView(viewId) {
             if (!dashboardAuthenticated || !walletSessionToken ||
-                walletSessionOwner !== connectedWallet?.toLowerCase() ||
+                walletSessionOwner !== getConnectedWalletOwnerKey() ||
                 walletSessionExpiresAt <= Date.now()) {
                 lockDashboard();
                 return;
@@ -3004,13 +3159,13 @@ let connectedWallet = null;
         async function acceptDisclaimer() {
             const button = document.getElementById('disclaimer-continue-button');
             const feedback = document.getElementById('disclaimer-feedback');
-            const owner = connectedWallet?.toLowerCase();
+            const owner = getConnectedWalletOwnerKey();
             if (!owner || !button || button.disabled) return;
             button.disabled = true;
             if (feedback) feedback.textContent = 'Saving your selection...';
             try {
                 if (disclaimerGateMode === 'purchase') {
-                    if (connectedWallet?.toLowerCase() !== owner) return;
+                    if (getConnectedWalletOwnerKey() !== owner) return;
                     resolvePurchaseDisclaimer(true);
                     return;
                 }
@@ -3027,7 +3182,7 @@ let connectedWallet = null;
                     const data = await response.json();
                     if (!response.ok) throw new Error(data.error || 'Unable to remember your selection.');
                 }
-                if (connectedWallet?.toLowerCase() !== owner) return;
+                if (getConnectedWalletOwnerKey() !== owner) return;
                 await continueAfterDisclaimer();
             } catch (error) {
                 console.error('Disclaimer acceptance failed:', error);
@@ -3097,7 +3252,7 @@ let connectedWallet = null;
             if (cancelButton) cancelButton.hidden = true;
             if (dashboardAuthenticated &&
                 walletSessionToken &&
-                walletSessionOwner === connectedWallet?.toLowerCase() &&
+                walletSessionOwner === getConnectedWalletOwnerKey() &&
                 walletSessionExpiresAt > Date.now()) {
                 const header = document.querySelector('body > header');
                 const main = document.querySelector('main');
@@ -3154,20 +3309,53 @@ let connectedWallet = null;
         }
 
         async function connectWallet() {
-            const provider = getProvider();
-            if (!provider) {
-                setWalletLoginStatus('No compatible Web3 wallet was found. Install or enable a wallet to continue.');
-                return;
-            }
-            setWalletLoginStatus('Approve the wallet connection, then sign the access message.', true);
+            const walletType = document.getElementById('wallet-login-type')?.value || 'EVM';
+            const walletName = document.getElementById('wallet-login-solana-provider')?.value || 'phantom';
             try {
+                setWalletLoginStatus('Connect your wallet, then sign the access message.', true);
+                if (walletType === 'SOLANA') {
+                    const provider = getSolanaWalletProvider(walletName);
+                    if (!provider) {
+                        setWalletLoginStatus(`${walletName === 'solflare' ? 'Solflare' : 'Phantom'} was not detected. Install or enable that wallet.`);
+                        return;
+                    }
+                    await provider.connect();
+                    const address = provider.publicKey?.toString();
+                    if (!address) {
+                        setWalletLoginStatus('No Solana wallet account was selected.');
+                        return;
+                    }
+                    connectedSolanaProviderName = walletName;
+                    if (provider.on && !solanaProviderListeners.has(provider)) {
+                        provider.on('accountChanged', publicKey => {
+                            if (connectedWalletType !== 'SOLANA' || connectedSolanaProviderName !== walletName) return;
+                            if (!publicKey) return disconnectWallet();
+                            const nextAddress = publicKey.toString();
+                            addAvailableWallet({ address: nextAddress, type: 'SOLANA', provider: walletName });
+                            onWalletSwitched(nextAddress, 'SOLANA', walletName);
+                        });
+                        solanaProviderListeners.add(provider);
+                    }
+                    addAvailableWallet({ address, type: 'SOLANA', provider: walletName });
+                    await onWalletSwitched(address, 'SOLANA', walletName);
+                    return;
+                }
+
+                const provider = getProvider();
+                if (!provider) {
+                    setWalletLoginStatus('No compatible EVM wallet was found. Install or enable an EVM wallet to continue.');
+                    return;
+                }
                 const accounts = await provider.request({ method: 'eth_requestAccounts' });
                 if (!accounts || accounts.length === 0) {
                     setWalletLoginStatus('No wallet account was selected.');
                     return;
                 }
-                availableWallets = accounts;
-                await onWalletSwitched(accounts[0]);
+                availableWallets = [
+                    ...availableWallets.filter(item => item.type !== 'EVM'),
+                    ...accounts.map(address => ({ address, type: 'EVM' }))
+                ];
+                await onWalletSwitched(accounts[0], 'EVM');
             } catch (err) {
                 console.error("Wallet Connection Error:", err);
                 setWalletLoginStatus(err?.code === 4001 ? 'Wallet signature was rejected. Sign the message to unlock the dashboard.' : (err.message || 'Unable to sign in with this wallet.'));
@@ -3175,16 +3363,43 @@ let connectedWallet = null;
         }
 
         async function connectNewWallet() {
-            const provider = getProvider();
-            if (!provider) { alert("No Web3 wallet found!"); return; }
+            const walletType = document.getElementById('wallet-add-type')?.value || 'EVM';
+            const walletName = document.getElementById('wallet-add-solana-provider')?.value || 'phantom';
             try {
+                if (walletType === 'SOLANA') {
+                    const provider = getSolanaWalletProvider(walletName);
+                    if (!provider) { alert(`${walletName === 'solflare' ? 'Solflare' : 'Phantom'} was not detected.`); return; }
+                    await provider.connect();
+                    const address = provider.publicKey?.toString();
+                    if (!address) { alert('No Solana wallet account was selected.'); return; }
+                    connectedSolanaProviderName = walletName;
+                    if (provider.on && !solanaProviderListeners.has(provider)) {
+                        provider.on('accountChanged', publicKey => {
+                            if (connectedWalletType !== 'SOLANA' || connectedSolanaProviderName !== walletName) return;
+                            if (!publicKey) return disconnectWallet();
+                            const nextAddress = publicKey.toString();
+                            addAvailableWallet({ address: nextAddress, type: 'SOLANA', provider: walletName });
+                            onWalletSwitched(nextAddress, 'SOLANA', walletName);
+                        });
+                        solanaProviderListeners.add(provider);
+                    }
+                    addAvailableWallet({ address, type: 'SOLANA', provider: walletName });
+                    await onWalletSwitched(address, 'SOLANA', walletName);
+                    return;
+                }
+
+                const provider = getProvider();
+                if (!provider) { alert('No compatible EVM wallet was found.'); return; }
                 const permissions = await provider.request({ method: 'wallet_requestPermissions', params: [{ eth_accounts: {} }] });
                 const accountsPermission = permissions.find(p => p.parentCapability === 'eth_accounts');
                 if (accountsPermission) {
                     const accounts = await provider.request({ method: 'eth_accounts' });
                     if (accounts && accounts.length > 0) {
-                        availableWallets = accounts;
-                        await onWalletSwitched(accounts[0]);
+                        availableWallets = [
+                            ...availableWallets.filter(item => item.type !== 'EVM'),
+                            ...accounts.map(address => ({ address, type: 'EVM' }))
+                        ];
+                        await onWalletSwitched(accounts[0], 'EVM');
                     }
                 }
             } catch (err) {
@@ -3214,22 +3429,47 @@ let connectedWallet = null;
             const preview = document.getElementById('wallet-active-preview');
             if (!accounts || !preview) return;
             preview.textContent = connectedWallet
-                ? `${connectedWallet.substring(0, 6)}...${connectedWallet.slice(-4)}`
+                ? `${connectedWalletType === 'SOLANA' ? 'Solana' : 'EVM'} · ${connectedWallet.substring(0, 6)}...${connectedWallet.slice(-4)}`
                 : 'Wallet';
             accounts.replaceChildren();
-            availableWallets.forEach(address => {
-                const isActive = address.toLowerCase() === connectedWallet?.toLowerCase();
+            availableWallets.forEach(wallet => {
+                const isActive = wallet.type === connectedWalletType &&
+                    (wallet.type === 'EVM'
+                        ? wallet.address.toLowerCase() === connectedWallet?.toLowerCase()
+                        : wallet.address === connectedWallet);
                 const button = document.createElement('button');
                 button.type = 'button';
                 button.className = `wallet-menu-account${isActive ? ' is-active' : ''}`;
                 button.setAttribute('aria-current', isActive ? 'true' : 'false');
-                button.textContent = `${address.substring(0, 6)}...${address.slice(-4)}`;
+                button.textContent = `${wallet.type === 'SOLANA' ? 'Solana' : 'EVM'} · ${wallet.address.substring(0, 6)}...${wallet.address.slice(-4)}`;
                 button.addEventListener('click', () => {
                     closeWalletMenu();
-                    onWalletSwitched(address);
+                    switchToAvailableWallet(wallet);
                 });
                 accounts.append(button);
             });
+        }
+
+        async function switchToAvailableWallet(wallet) {
+            if (wallet.type === 'SOLANA') {
+                const provider = getSolanaWalletProvider(wallet.provider);
+                if (!provider) {
+                    setWalletLoginStatus(`${wallet.provider === 'solflare' ? 'Solflare' : 'Phantom'} is unavailable. Reconnect that wallet to continue.`);
+                    return;
+                }
+                try {
+                    await provider.connect();
+                    if (provider.publicKey?.toString() !== wallet.address) {
+                        setWalletLoginStatus('The selected Solana account changed. Select it again from the wallet menu.');
+                        return;
+                    }
+                    await onWalletSwitched(wallet.address, 'SOLANA', wallet.provider);
+                } catch (error) {
+                    setWalletLoginStatus(error.message || 'Unable to connect the selected Solana wallet.');
+                }
+                return;
+            }
+            await onWalletSwitched(wallet.address, 'EVM');
         }
 
         function updateWalletUIState(isConnected) {
@@ -3247,10 +3487,10 @@ let connectedWallet = null;
             }
         }
 
-        async function onWalletSwitched(walletAddress) {
+        async function onWalletSwitched(walletAddress, walletType = 'EVM', solanaProviderName = null) {
             if (!walletAddress) return;
-            const owner = walletAddress.toLowerCase();
-            const changedWallet = connectedWallet?.toLowerCase() !== owner;
+            const owner = walletType === 'SOLANA' ? `solana:${walletAddress}` : walletAddress.toLowerCase();
+            const changedWallet = getConnectedWalletOwnerKey() !== owner;
             if (changedWallet) {
                 disconnectMarketDataStream();
                 resetDashboardToTradeView();
@@ -3276,31 +3516,43 @@ let connectedWallet = null;
                 lockDashboard('Sign the access message with the selected wallet to continue.');
             }
             connectedWallet = walletAddress;
+            connectedWalletType = walletType;
+            connectedSolanaProviderName = walletType === 'SOLANA' ? solanaProviderName : null;
+            const loginType = document.getElementById('wallet-login-type');
+            if (loginType) loginType.value = walletType;
+            const loginSolanaProvider = document.getElementById('wallet-login-solana-provider');
+            if (loginSolanaProvider && solanaProviderName) loginSolanaProvider.value = solanaProviderName;
+            const paymentSolanaProvider = document.getElementById('solana-wallet-select');
+            if (paymentSolanaProvider && solanaProviderName) paymentSolanaProvider.value = solanaProviderName;
+            updateWalletConnectionControls();
+            updateWalletNetworkOptions();
+            updatePayoutOptions('account');
+            updatePayoutOptions('referral');
             updateWalletUIState(true);
             updateWalletDropdown();
             setWalletLoginStatus('Sign the access message in your wallet.', true);
             try {
                 await ensureWalletSession();
             } catch (error) {
-                if (connectedWallet?.toLowerCase() === owner) {
+                if (getConnectedWalletOwnerKey() === owner) {
                     console.error('Wallet sign-in failed:', error);
                     lockDashboard(error?.code === 4001 ? 'Wallet signature was rejected. Sign the message to unlock the dashboard.' : (error.message || 'Unable to sign in with this wallet.'));
                 }
                 return;
             }
-            if (connectedWallet?.toLowerCase() !== owner) return;
+            if (getConnectedWalletOwnerKey() !== owner) return;
             try {
                 const consentResponse = await walletFetch('/api/user/disclaimer-consent');
                 const consent = await consentResponse.json();
                 if (!consentResponse.ok) throw new Error(consent.error || 'Unable to check disclaimer acceptance.');
-                if (connectedWallet?.toLowerCase() !== owner) return;
+                if (getConnectedWalletOwnerKey() !== owner) return;
                 if (consent.accepted && consent.version === DISCLAIMER_VERSION) {
                     await continueAfterDisclaimer();
                 } else {
                     showDisclaimerGate();
                 }
             } catch (error) {
-                if (connectedWallet?.toLowerCase() === owner) {
+                if (getConnectedWalletOwnerKey() === owner) {
                     console.error('Disclaimer status check failed:', error);
                     lockDashboard(error.message || 'Unable to check disclaimer acceptance. Sign in again to continue.');
                 }
@@ -3398,6 +3650,8 @@ let connectedWallet = null;
             currentWalletIsSupport = false;
             setSupportStaffWorkspace(false);
             connectedWallet = null;
+            connectedWalletType = 'EVM';
+            connectedSolanaProviderName = null;
             walletSessionGeneration++;
             disconnectMarketDataStream();
             walletSessionToken = null;
@@ -3410,6 +3664,9 @@ let connectedWallet = null;
             if (securityWarning) securityWarning.hidden = true;
             lockDashboard('Your wallet has been disconnected. Sign in again to access your dashboard.');
             availableWallets = [];
+            updateWalletNetworkOptions();
+            updatePayoutOptions('account');
+            updatePayoutOptions('referral');
             userAccounts = [];
             accountPerformanceData = { overall: null, accounts: [] };
             selectedAccountsPerformanceTab = 'overall';
@@ -3506,7 +3763,7 @@ let connectedWallet = null;
         }
 
         async function loadTradeCopyGroups(forceRefresh = false) {
-            const walletKey = connectedWallet?.toLowerCase();
+            const walletKey = getConnectedWalletOwnerKey();
             if (!walletKey || (!forceRefresh && tradeCopyGroupsLoadedWallet === walletKey)) return;
             if (tradeCopyGroupsPromise) await tradeCopyGroupsPromise;
             if (!forceRefresh && tradeCopyGroupsLoadedWallet === walletKey) return;
@@ -3515,7 +3772,7 @@ let connectedWallet = null;
                 const response = await walletFetch('/api/trade-copy/groups');
                 const data = await response.json();
                 if (!response.ok) throw new Error(data.error || 'Unable to load copy-trading groups.');
-                if (connectedWallet?.toLowerCase() !== walletKey) return;
+                if (getConnectedWalletOwnerKey() !== walletKey) return;
                 tradeCopyGroups = data.groups || [];
                 tradeCopyGroupsLoadedWallet = walletKey;
                 renderCopyTradingGroups();
@@ -3666,7 +3923,7 @@ let connectedWallet = null;
         }
 
         async function loadAccountPerformance() {
-            const wallet = connectedWallet?.toLowerCase();
+            const wallet = getConnectedWalletOwnerKey();
             if (!wallet) return false;
             if (accountPerformanceRequest && accountPerformanceRequestWallet === wallet) {
                 return accountPerformanceRequest;
@@ -3676,13 +3933,13 @@ let connectedWallet = null;
                     const response = await walletFetch('/api/accounts/performance');
                     const data = await response.json();
                     if (!response.ok) throw new Error(data.error || 'Unable to load account performance.');
-                    if (wallet !== connectedWallet?.toLowerCase()) return false;
+                    if (wallet !== getConnectedWalletOwnerKey()) return false;
                     accountPerformanceData = data;
                     renderPortfolioPerformance();
                     return true;
                 } catch (error) {
                     console.error('Unable to load portfolio performance:', error);
-                    if (wallet === connectedWallet?.toLowerCase()) renderPerformanceUnavailable();
+                    if (wallet === getConnectedWalletOwnerKey()) renderPerformanceUnavailable();
                     return false;
                 } finally {
                     if (accountPerformanceRequest === request) {
@@ -3811,7 +4068,7 @@ let connectedWallet = null;
 
         function refreshAccountMinimizedOverviews() {
             const assignments = getCopyAccountAssignments();
-            const copyGroupsAvailable = tradeCopyGroupsLoadedWallet === connectedWallet?.toLowerCase();
+            const copyGroupsAvailable = tradeCopyGroupsLoadedWallet === getConnectedWalletOwnerKey();
             for (const account of userAccounts) {
                 const card = document.getElementById(`acc-card-${account.id}`);
                 const summary = card?.querySelector(`#account-minimized-overview-${CSS.escape(account.id)}`);
@@ -4106,7 +4363,7 @@ let connectedWallet = null;
             let copyGroupsAvailable = false;
             try {
                 await loadTradeCopyGroups();
-                copyGroupsAvailable = tradeCopyGroupsLoadedWallet === connectedWallet?.toLowerCase();
+                copyGroupsAvailable = tradeCopyGroupsLoadedWallet === getConnectedWalletOwnerKey();
                 if (copyStatus) copyStatus.textContent = '';
             } catch (error) {
                 if (copyStatus) copyStatus.textContent = `Copy-group status is unavailable: ${error.message || 'Unable to load copy-trading groups.'}`;
@@ -4530,6 +4787,8 @@ let connectedWallet = null;
 
         async function requestWithdrawal(accountId) {
             try {
+                const payout = getSelectedPayoutOptions('account');
+                const payoutLabel = `${payout.payout_asset} on ${getPayoutNetworkLabel(payout.payout_chain_id)}`;
                 const detailsRes = await walletFetch(`/api/accounts/details?account_id=${encodeURIComponent(accountId)}&wallet=${encodeURIComponent(connectedWallet)}`);
                 const details = await detailsRes.json();
                 if (!detailsRes.ok || !details || !details.account) { alert(details.error || "Could not fetch account details."); return; }
@@ -4545,9 +4804,10 @@ let connectedWallet = null;
                     return;
                 }
                 const amountInput = prompt(
-                    `Maximum gross withdrawal: $${availableGross.toFixed(2)} USDT.\n` +
+                    `Maximum gross withdrawal: $${availableGross.toFixed(2)} ${payout.payout_asset}.\n` +
                     `You receive 90% ($${(availableGross * 0.9).toFixed(2)}); admin retains 10% ($${(availableGross * 0.1).toFixed(2)}).\n` +
-                    'Your account will pause new trades while the request is reviewed. The gross amount is deducted only if approved.\nEnter gross USDT amount:'
+                    `Payout destination: ${payoutLabel} to ${connectedWallet}.\n` +
+                    'Your account will pause new trades while the request is reviewed. The gross amount is deducted only if approved.\nEnter gross amount:'
                 );
                 if (!amountInput) return;
                 const amount = parseFloat(amountInput);
@@ -4561,7 +4821,7 @@ let connectedWallet = null;
                 const res = await fetch('/api/withdrawals/request', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ...authorization, account_id: accountId, amount })
+                    body: JSON.stringify({ ...authorization, account_id: accountId, amount, ...payout })
                 });
                 const data = await res.json();
                 if (data.success) { alert(`Withdrawal requested for review.\nGross: $${data.gross_amount.toFixed(2)}\nYou receive: $${data.user_amount.toFixed(2)}\nAdmin share: $${data.admin_share.toFixed(2)}`); loadUserAccounts(connectedWallet); }
@@ -4570,7 +4830,15 @@ let connectedWallet = null;
         }
 
         async function requestCommissionWithdrawal() {
-            const amountInput = prompt(`Enter commission USDT amount (Available: $${availableCommissionBalance.toFixed(2)}):`);
+            let payout;
+            try {
+                payout = getSelectedPayoutOptions('referral');
+            } catch (error) {
+                alert(error.message);
+                return;
+            }
+            const payoutLabel = `${payout.payout_asset} on ${getPayoutNetworkLabel(payout.payout_chain_id)}`;
+            const amountInput = prompt(`Enter commission amount in ${payout.payout_asset} (Available: $${availableCommissionBalance.toFixed(2)}; payout to ${connectedWallet} on ${payoutLabel}):`);
             if (!amountInput) return;
             const amount = parseFloat(amountInput);
             if (isNaN(amount) || amount <= 0 || amount > availableCommissionBalance) { alert("Invalid amount."); return; }
@@ -4580,7 +4848,7 @@ let connectedWallet = null;
                 const res = await fetch('/api/referrals/withdraw', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ...authorization, amount })
+                    body: JSON.stringify({ ...authorization, amount, ...payout })
                 });
                 const data = await res.json();
                 if (data.success) { alert("Commission withdrawal submitted!"); loadUserProfile(connectedWallet); }
@@ -4596,16 +4864,39 @@ let connectedWallet = null;
             })} USDT`;
         }
 
+        function formatAdminStablecoin(value, asset = 'USDT') {
+            const amount = Number(value);
+            return `$${(Number.isFinite(amount) ? amount : 0).toLocaleString('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            })} ${asset}`;
+        }
+
+        function formatAdminStablecoinTotals(usdt, usdc) {
+            return `${formatAdminStablecoin(usdt, 'USDT')} · ${formatAdminStablecoin(usdc, 'USDC')}`;
+        }
+
+        function getPayoutNetworkLabel(chainId) {
+            if (Number(chainId) === 101) return 'Solana Mainnet';
+            return SUPPORTED_EVM_CHAINS[Number(chainId)]?.name || 'Unknown network';
+        }
+
         function getTransactionExplorerUrl(chainId, transactionHash) {
-            if (typeof transactionHash !== 'string' || !/^0x[0-9a-f]{64}$/i.test(transactionHash)) return '';
+            if (typeof transactionHash !== 'string') return '';
             const explorers = {
                 1: 'https://etherscan.io/tx/',
                 8453: 'https://basescan.org/tx/',
                 137: 'https://polygonscan.com/tx/',
                 43114: 'https://snowtrace.io/tx/',
-                56: 'https://bscscan.com/tx/'
+                56: 'https://bscscan.com/tx/',
+                101: 'https://solscan.io/tx/'
             };
             const baseUrl = explorers[Number(chainId)];
+            if (Number(chainId) === 101) {
+                if (!/^[1-9A-HJ-NP-Za-km-z]{64,90}$/.test(transactionHash)) return '';
+            } else if (!/^0x[0-9a-f]{64}$/i.test(transactionHash)) {
+                return '';
+            }
             return baseUrl ? `${baseUrl}${encodeURIComponent(transactionHash)}` : '';
         }
 
@@ -4650,7 +4941,7 @@ let connectedWallet = null;
                     <li class="admin-operations-event">
                         <div>
                             <strong>${escapeHTML(adminEventLabel(event))}</strong>
-                            <small>${escapeHTML(new Date(event.occurred_at).toLocaleString())}${isWithdrawal || event.event_type === 'ACCOUNT_PURCHASE' ? ` · ${escapeHTML(formatAdminUsdt(event.amount_usdt))}` : ''}</small>
+                            <small>${escapeHTML(new Date(event.occurred_at).toLocaleString())}${isWithdrawal || event.event_type === 'ACCOUNT_PURCHASE' ? ` · ${escapeHTML(isWithdrawal ? `${formatAdminStablecoin(event.amount_usdt, event.payment_asset || 'USDT')} on ${getPayoutNetworkLabel(event.chain_id)}` : formatAdminStablecoin(event.amount_usdt, event.payment_asset || 'USDT'))}` : ''}</small>
                             ${event.tx_hash ? `<small>Transaction: ${explorerUrl ? `<a href="${escapeHTML(explorerUrl)}" target="_blank" rel="noopener noreferrer">${escapeHTML(event.tx_hash)}</a>` : `<code>${escapeHTML(event.tx_hash)}</code>`}</small>` : ''}
                         </div>
                         ${action}
@@ -4695,12 +4986,12 @@ let connectedWallet = null;
                 };
                 setText('admin-active-wallets', Number(metrics.active_wallets || 0).toLocaleString());
                 setText('admin-all-time-wallets', Number(metrics.all_time_wallets || 0).toLocaleString());
-                setText('admin-sales-total', formatAdminUsdt(metrics.sales_usdt));
-                setText('admin-sales-count', `${Number(metrics.verified_purchases || 0).toLocaleString()} verified paid purchases`);
-                setText('admin-paid-out-total', formatAdminUsdt(metrics.paid_withdrawal_usdt));
+                setText('admin-sales-total', `$${Number(metrics.sales_stablecoins_usd ?? metrics.sales_usdt ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`);
+                setText('admin-sales-count', `${Number(metrics.verified_purchases || 0).toLocaleString()} verified USDT/USDC purchases`);
+                setText('admin-paid-out-total', formatAdminStablecoinTotals(metrics.paid_withdrawal_usdt, metrics.paid_withdrawal_usdc));
                 setText('admin-paid-out-count', `${Number(metrics.paid_withdrawals || 0).toLocaleString()} payouts marked paid`);
                 setText('admin-withdrawal-count', Number(metrics.withdrawal_requests || 0).toLocaleString());
-                setText('admin-pending-out-total', formatAdminUsdt(metrics.pending_withdrawal_usdt));
+                setText('admin-pending-out-total', formatAdminStablecoinTotals(metrics.pending_withdrawal_usdt, metrics.pending_withdrawal_usdc));
                 setText('admin-pending-out-count', `${Number(metrics.pending_withdrawals || 0).toLocaleString()} requests awaiting review`);
                 setText('admin-open-tickets', Number(metrics.pending_tickets || 0).toLocaleString());
                 setText('admin-pending-reviews', Number(metrics.pending_reviews || 0).toLocaleString());
@@ -4715,7 +5006,7 @@ let connectedWallet = null;
 
                 const events = Array.isArray(data.events) ? data.events : [];
                 renderAdminOperationsFeed(events);
-                const storageKey = `blastrr-admin-seen-operations:${connectedWallet?.toLowerCase() || ''}`;
+                const storageKey = `blastrr-admin-seen-operations:${getConnectedWalletOwnerKey() || ''}`;
                 let seenIds = [];
                 try {
                     seenIds = JSON.parse(localStorage.getItem(storageKey) || '[]');
@@ -5025,9 +5316,10 @@ let connectedWallet = null;
                         ? `<strong>${escapeHTML(w.plan_name)}</strong><br>Balance: ${escapeHTML(formatAdminUsdt(w.account_balance))}<br>${Number(w.admin_frozen) ? 'Admin freeze: ' + escapeHTML(w.admin_freeze_reason || 'active') : (w.trades?.some(trade => trade.status === 'OPEN') ? 'Open trades: ' + w.trades.filter(trade => trade.status === 'OPEN').length : 'No open trades')}`
                         : `<strong>${escapeHTML(w.plan_name)}</strong>`;
                     const investigationHtml = renderWithdrawalInvestigation(w);
+                    const payoutLabel = `${escapeHTML(w.payout_asset || 'USDT')} on ${escapeHTML(getPayoutNetworkLabel(w.payout_chain_id))}`;
                     const amountDetails = w.type === 'ACCOUNT'
-                        ? `<strong>$${Number(w.amount).toFixed(2)} gross</strong><br>User: $${Number(w.user_amount).toFixed(2)}<br>Admin: $${Number(w.admin_share).toFixed(2)}`
-                        : `<strong>$${Number(w.amount).toFixed(2)}</strong>`;
+                        ? `<strong>$${Number(w.amount).toFixed(2)} gross</strong><br>User: $${Number(w.user_amount).toFixed(2)}<br>Admin: $${Number(w.admin_share).toFixed(2)}<br>Payout: ${payoutLabel}`
+                        : `<strong>$${Number(w.amount).toFixed(2)}</strong><br>Payout: ${payoutLabel}`;
 
                     tbody.innerHTML += `
                         <tr>
@@ -5994,30 +6286,41 @@ let connectedWallet = null;
         }
 
         async function signedTradeAuthorization() {
-            const provider = getProvider();
-            if (!provider || !connectedWallet) throw new Error('Connect the wallet that owns this account first.');
+            if (!connectedWallet) throw new Error('Connect the wallet that owns this account first.');
             const challengeResponse = await fetch('/api/auth/trade-challenge', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ wallet_address: connectedWallet })
+                body: JSON.stringify({ wallet_address: connectedWallet, wallet_type: connectedWalletType })
             });
             const challengeData = await readApiJson(challengeResponse, '/api/auth/trade-challenge');
             if (!challengeResponse.ok) throw new Error(challengeData.error || 'Unable to request wallet authorization.');
 
-            const encodedMessage = `0x${Array.from(new TextEncoder().encode(challengeData.challenge), byte => byte.toString(16).padStart(2, '0')).join('')}`;
-            const signature = await provider.request({
-                method: 'personal_sign',
-                params: [encodedMessage, connectedWallet]
-            });
+            let signature;
+            if (connectedWalletType === 'SOLANA') {
+                const provider = getSolanaWalletProvider(connectedSolanaProviderName);
+                if (!provider?.signMessage) throw new Error('The active Solana wallet does not support message signing.');
+                const result = await provider.signMessage(new TextEncoder().encode(challengeData.challenge), 'utf8');
+                const signatureBytes = result?.signature || result;
+                signature = btoa(String.fromCharCode(...signatureBytes));
+            } else {
+                const provider = getProvider();
+                if (!provider) throw new Error('Connect the EVM wallet that owns this account first.');
+                const encodedMessage = `0x${Array.from(new TextEncoder().encode(challengeData.challenge), byte => byte.toString(16).padStart(2, '0')).join('')}`;
+                signature = await provider.request({
+                    method: 'personal_sign',
+                    params: [encodedMessage, connectedWallet]
+                });
+            }
             return {
                 wallet_address: connectedWallet,
+                wallet_type: connectedWalletType,
                 challenge: challengeData.challenge,
                 signature
             };
         }
 
         async function ensureWalletSession() {
-            const owner = connectedWallet?.toLowerCase();
+            const owner = getConnectedWalletOwnerKey();
             if (!owner) throw new Error('Connect a wallet to view private account data.');
             if (walletSessionToken && walletSessionOwner === owner && walletSessionExpiresAt > Date.now()) {
                 return walletSessionToken;
@@ -6027,7 +6330,7 @@ let connectedWallet = null;
             const generation = walletSessionGeneration;
             const sessionPromise = (async () => {
                 const authorization = await signedTradeAuthorization();
-                if (generation !== walletSessionGeneration || owner !== connectedWallet?.toLowerCase()) {
+                if (generation !== walletSessionGeneration || owner !== getConnectedWalletOwnerKey()) {
                     throw new Error('Wallet changed before authorization completed.');
                 }
                 const response = await fetch('/api/auth/wallet-session', {
@@ -6070,7 +6373,7 @@ let connectedWallet = null;
                 walletSessionGeneration++;
                 walletSessionToken = null;
                 walletSessionExpiresAt = 0;
-                walletSessionOwner = connectedWallet.toLowerCase();
+                walletSessionOwner = getConnectedWalletOwnerKey();
                 walletSessionPromise = null;
                 token = await ensureWalletSession();
                 response = await fetchWithToken(token);
@@ -7227,13 +7530,13 @@ let connectedWallet = null;
             }
             const amount = Math.round(Number(priceUsdt) * quantity * 100) / 100;
             if (!Number.isFinite(amount) || amount < 0) { alert("Invalid plan price."); return; }
-            const owner = connectedWallet.toLowerCase();
+            const owner = getConnectedWalletOwnerKey();
             if (!dashboardAuthenticated || !walletSessionToken ||
                 walletSessionOwner !== owner || walletSessionExpiresAt <= Date.now()) {
                 lockDashboard('Your wallet session expired. Sign in again before purchasing.');
                 return;
             }
-            if (!await requestPurchaseDisclaimer() || connectedWallet?.toLowerCase() !== owner) return;
+            if (!await requestPurchaseDisclaimer() || getConnectedWalletOwnerKey() !== owner) return;
             await completePlanPurchase(planId, amount, quantity);
         }
 
@@ -7267,9 +7570,24 @@ let connectedWallet = null;
                 return;
             }
 
-            const selectedChainId = parseInt(document.getElementById('payment-chain-select')?.value || '1');
+            const selectedChain = document.getElementById('payment-chain-select')?.value || '1';
+            const selectedAsset = document.getElementById('payment-asset-select')?.value || 'USDT';
+            if (selectedChain === '101') {
+                if (connectedWalletType !== 'SOLANA') {
+                    alert('Solana payments are available only to a connected Solana wallet.');
+                    return;
+                }
+                await completeSolanaPlanPurchase(planId, amount, quantity, selectedAsset);
+                return;
+            }
+            if (connectedWalletType !== 'EVM') {
+                alert('EVM payments are available only to a connected EVM wallet.');
+                return;
+            }
+            const selectedChainId = Number(selectedChain);
             const chainConfig = SUPPORTED_EVM_CHAINS[selectedChainId];
-            if (!chainConfig) { alert("Invalid network selection."); return; }
+            const tokenConfig = chainConfig?.tokens?.[selectedAsset];
+            if (!chainConfig || !tokenConfig) { alert("Invalid network or payment asset selection."); return; }
 
             const provider = getProvider();
             if (!provider) return;
@@ -7282,11 +7600,11 @@ let connectedWallet = null;
                 return;
             }
 
-            if (!confirm(`Confirm purchase of ${quantity} account${quantity === 1 ? '' : 's'} for $${amount.toFixed(2)} USDT on ${chainConfig.name}?`)) return;
+            if (!confirm(`Confirm purchase of ${quantity} account${quantity === 1 ? '' : 's'} for $${amount.toFixed(2)} ${selectedAsset} on ${chainConfig.name}?`)) return;
 
             try {
                 const paddedRecipient = TREASURY_WALLET.toLowerCase().replace('0x', '').padStart(64, '0');
-                const rawAmount = toTokenUnits(amount, chainConfig.decimals);
+                const rawAmount = toTokenUnits(amount, tokenConfig.decimals);
                 const amountHex = rawAmount.toString(16).padStart(64, '0');
                 const calldata = '0xa9059cbb' + paddedRecipient + amountHex;
 
@@ -7294,7 +7612,7 @@ let connectedWallet = null;
                     method: 'eth_sendTransaction',
                     params: [{
                         from: connectedWallet,
-                        to: chainConfig.usdtAddress,
+                        to: tokenConfig.address,
                         data: calldata
                     }]
                 });
@@ -7310,6 +7628,7 @@ let connectedWallet = null;
                         quantity,
                         tx_hash: txHash, 
                         chain_id: selectedChainId,
+                        payment_asset: selectedAsset,
                         promo_code: activePromoCode,
                         disclaimer_version: DISCLAIMER_VERSION,
                         terms_accepted: true,
@@ -7328,6 +7647,127 @@ let connectedWallet = null;
             } catch (err) {
                 console.error("Purchase Error:", err);
                 alert("Transaction failed or was rejected.");
+            }
+        }
+
+        async function completeSolanaPlanPurchase(planId, amount, quantity, assetSymbol) {
+            const walletName = document.getElementById('solana-wallet-select')?.value || 'phantom';
+            const walletProvider = getSolanaWalletProvider(walletName);
+            if (!walletProvider) {
+                alert(`${walletName === 'solflare' ? 'Solflare' : 'Phantom'} was not detected. Install or enable that Solana wallet, or select the wallet you have installed.`);
+                return;
+            }
+            if (!window.solanaWeb3) {
+                alert('Solana payment support could not load. Refresh the page and try again.');
+                return;
+            }
+            const tokenConfig = SOLANA_TOKENS[assetSymbol];
+            if (!tokenConfig) { alert('Invalid Solana payment asset.'); return; }
+
+            let signature = '';
+            try {
+                await walletProvider.connect();
+                if (walletProvider.publicKey?.toString() !== connectedWallet) {
+                    throw new Error('Select the active Solana wallet in the payment provider before continuing.');
+                }
+                const payer = new solanaWeb3.PublicKey(walletProvider.publicKey.toString());
+                if (!confirm(`Confirm purchase of ${quantity} account${quantity === 1 ? '' : 's'} for $${amount.toFixed(2)} ${assetSymbol} on Solana Mainnet?`)) return;
+
+                const connection = new solanaWeb3.Connection(SOLANA_RPC_URL, 'confirmed');
+                const mint = new solanaWeb3.PublicKey(tokenConfig.address);
+                const treasury = new solanaWeb3.PublicKey(SOLANA_TREASURY_WALLET);
+                const tokenProgram = new solanaWeb3.PublicKey(SOLANA_TOKEN_PROGRAM_ID);
+                const associatedTokenProgram = new solanaWeb3.PublicKey(SOLANA_ASSOCIATED_TOKEN_PROGRAM_ID);
+                const getAssociatedTokenAddress = owner => solanaWeb3.PublicKey.findProgramAddressSync([
+                    owner.toBuffer(),
+                    tokenProgram.toBuffer(),
+                    mint.toBuffer()
+                ], associatedTokenProgram)[0];
+                const sourceTokenAccount = getAssociatedTokenAddress(payer);
+                const destinationTokenAccount = getAssociatedTokenAddress(treasury);
+                const [latestBlockhash, sourceInfo, destinationInfo] = await Promise.all([
+                    connection.getLatestBlockhash('confirmed'),
+                    connection.getAccountInfo(sourceTokenAccount, 'confirmed'),
+                    connection.getAccountInfo(destinationTokenAccount, 'confirmed')
+                ]);
+                if (!sourceInfo) throw new Error(`The selected Solana wallet has no ${assetSymbol} token account.`);
+
+                const transaction = new solanaWeb3.Transaction({
+                    feePayer: payer,
+                    recentBlockhash: latestBlockhash.blockhash
+                });
+                if (!destinationInfo) {
+                    transaction.add(new solanaWeb3.TransactionInstruction({
+                        programId: associatedTokenProgram,
+                        keys: [
+                            { pubkey: payer, isSigner: true, isWritable: true },
+                            { pubkey: destinationTokenAccount, isSigner: false, isWritable: true },
+                            { pubkey: treasury, isSigner: false, isWritable: false },
+                            { pubkey: mint, isSigner: false, isWritable: false },
+                            { pubkey: solanaWeb3.SystemProgram.programId, isSigner: false, isWritable: false },
+                            { pubkey: tokenProgram, isSigner: false, isWritable: false }
+                        ],
+                        data: new Uint8Array()
+                    }));
+                }
+
+                const rawAmount = toTokenUnits(amount, tokenConfig.decimals);
+                const transferData = new Uint8Array(10);
+                transferData[0] = 12;
+                new DataView(transferData.buffer).setBigUint64(1, rawAmount, true);
+                transferData[9] = tokenConfig.decimals;
+                transaction.add(new solanaWeb3.TransactionInstruction({
+                    programId: tokenProgram,
+                    keys: [
+                        { pubkey: sourceTokenAccount, isSigner: false, isWritable: true },
+                        { pubkey: mint, isSigner: false, isWritable: false },
+                        { pubkey: destinationTokenAccount, isSigner: false, isWritable: true },
+                        { pubkey: payer, isSigner: true, isWritable: false }
+                    ],
+                    data: transferData
+                }));
+
+                const result = await walletProvider.signAndSendTransaction(transaction);
+                signature = typeof result === 'string' ? result : result?.signature;
+                if (typeof signature !== 'string' || !signature) {
+                    throw new Error('The Solana wallet did not return a transaction signature.');
+                }
+                const confirmation = await connection.confirmTransaction({
+                    signature,
+                    blockhash: latestBlockhash.blockhash,
+                    lastValidBlockHeight: latestBlockhash.lastValidBlockHeight
+                }, 'finalized');
+                if (confirmation.value.err) throw new Error('The Solana transaction failed on-chain.');
+
+                const response = await walletFetch('/api/accounts/purchase', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        wallet_address: connectedWallet,
+                        plan_id: Number(planId),
+                        quantity,
+                        tx_hash: signature,
+                        chain_id: 101,
+                        payment_asset: assetSymbol,
+                        payment_wallet_address: payer.toBase58(),
+                        promo_code: activePromoCode,
+                        disclaimer_version: DISCLAIMER_VERSION,
+                        terms_accepted: true,
+                        simulated_funds_acknowledged: true
+                    })
+                });
+                const data = await response.json();
+                if (!response.ok || !data.success) {
+                    throw new Error(data.error || 'Unable to verify the Solana payment.');
+                }
+                alert(data.message || `${quantity} account${quantity === 1 ? '' : 's'} provisioned successfully.`);
+                await loadUserAccounts(connectedWallet);
+                switchView('tradeView');
+            } catch (error) {
+                console.error('Solana purchase error:', error);
+                alert(signature
+                    ? `Payment transaction ${signature} was submitted, but account provisioning could not be completed: ${error.message}`
+                    : error.message || 'Solana payment was cancelled or failed.');
             }
         }
 
