@@ -44,6 +44,12 @@ let connectedWallet = null;
         let accountPerformanceRequest = null;
         let accountPerformanceRequestWallet = null;
         let selectedAccountsPerformanceTab = 'overall';
+        let accountHistoryWallet = null;
+        let accountPurchases = [];
+        let accountWithdrawals = [];
+        let accountStatementOwner = null;
+        let withdrawalAvailability = [];
+        let selectedWithdrawalAccountId = null;
         let userReviewAccounts = [];
         let selectedAccountId = null;
         let activeAccount = null;
@@ -444,7 +450,28 @@ let connectedWallet = null;
             document.getElementById('wallet-login-type')?.addEventListener('change', updateWalletConnectionControls);
             document.getElementById('wallet-add-type')?.addEventListener('change', updateWalletConnectionControls);
             document.getElementById('account-payout-network')?.addEventListener('change', () => updatePayoutOptions('account'));
+            document.getElementById('account-payout-network')?.addEventListener('change', updateWithdrawalPayoutSummary);
+            document.getElementById('account-payout-asset')?.addEventListener('change', updateWithdrawalPayoutSummary);
             document.getElementById('referral-payout-network')?.addEventListener('change', () => updatePayoutOptions('referral'));
+            document.querySelector('.account-main-tabs')?.addEventListener('click', event => {
+                const tab = event.target.closest('[data-accounts-section-tab]');
+                if (tab) switchAccountsSection(tab.dataset.accountsSectionTab);
+            });
+            document.getElementById('refresh-account-withdrawals')?.addEventListener('click', loadAccountWithdrawalHistory);
+            document.getElementById('refresh-account-purchases')?.addEventListener('click', loadAccountPurchaseHistory);
+            document.getElementById('download-account-purchase-statement')?.addEventListener('click', downloadAccountPurchaseStatement);
+            document.getElementById('download-account-withdrawal-statement')?.addEventListener('click', downloadAccountWithdrawalStatement);
+            document.getElementById('open-withdrawal-request')?.addEventListener('click', () => requestWithdrawal());
+            document.getElementById('close-withdrawal-modal')?.addEventListener('click', closeWithdrawalRequest);
+            document.getElementById('withdrawal-request-account-list')?.addEventListener('click', event => {
+                const option = event.target.closest('[data-withdrawal-account]');
+                if (option && !option.disabled) selectWithdrawalAccount(option.dataset.withdrawalAccount);
+            });
+            document.getElementById('withdrawal-request-form')?.addEventListener('submit', submitWithdrawalRequest);
+            document.getElementById('withdrawal-request-amount')?.addEventListener('input', updateWithdrawalAmountSummary);
+            document.getElementById('withdrawal-request-modal')?.addEventListener('click', event => {
+                if (event.target === event.currentTarget) closeWithdrawalRequest();
+            });
             const disclaimerScrollArea = document.getElementById('disclaimer-scroll-area');
             disclaimerScrollArea?.addEventListener('scroll', updateDisclaimerScrollState);
             document.getElementById('disclaimer-accept-terms')?.addEventListener('change', updateDisclaimerContinueState);
@@ -1621,7 +1648,7 @@ let connectedWallet = null;
                                         <span class="market-chat-player-details">
                                             <strong>${escapeHTML(username)}</strong>
                                             <small>Rank: ${Number(message.battlepass_level) ? `Level ${Number(message.battlepass_level)}` : 'Unranked'} · ${Number(message.battlepass_xp || 0).toLocaleString()} XP · ${Number(message.battlepass_points || 0).toLocaleString()} points</small>
-                                            <span class="market-chat-player-rank">Title: BlastrrPass player</span>
+                                            <span class="market-chat-player-rank">Title: ${escapeHTML(message.battlepass_title || 'BlastrrPass player')}</span>
                                             <small>Total payouts: $${Number(message.total_payouts || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} USDT</small>
                                             <small>Referral code: ${escapeHTML(message.referral_code || '—')}</small>
                                         </span>
@@ -2380,7 +2407,7 @@ let connectedWallet = null;
         async function loadBattlePass() {
             const note = document.getElementById('battlepass-wallet-note');
             if (!connectedWallet) {
-                if (note) note.textContent = 'Connect your wallet to view your XP, points, tasks, and level rewards.';
+                if (note) note.textContent = 'Connect your wallet to view your XP, points, tasks, and level titles.';
                 return;
             }
             if (note) note.textContent = 'Loading your BlastrrPass...';
@@ -2417,6 +2444,7 @@ let connectedWallet = null;
             }
             document.getElementById('battlepass-username').textContent = `@${username}`;
             document.getElementById('battlepass-rank').textContent = rank;
+            document.getElementById('battlepass-title').textContent = battlePassProfile.title || 'No title claimed';
             document.getElementById('battlepass-xp').textContent = xp.toLocaleString();
             document.getElementById('battlepass-points').textContent = points.toLocaleString();
             const progressLabel = document.getElementById('battlepass-progress-label');
@@ -2445,6 +2473,7 @@ let connectedWallet = null;
 
         function renderBattlePassTasks() {
             const groups = {
+                PURCHASES: document.getElementById('battlepass-purchases-tasks'),
                 DAILY: document.getElementById('battlepass-daily-tasks'),
                 WEEKLY: document.getElementById('battlepass-weekly-tasks'),
                 MONTHLY: document.getElementById('battlepass-monthly-tasks'),
@@ -2453,7 +2482,10 @@ let connectedWallet = null;
             Object.values(groups).forEach(container => { if (container) container.replaceChildren(); });
             for (const [cadence, container] of Object.entries(groups)) {
                 if (!container) continue;
-                const tasks = battlePassTasks.filter(task => task.cadence === cadence);
+                const isPurchaseCategory = cadence === 'PURCHASES';
+                const tasks = battlePassTasks.filter(task => isPurchaseCategory
+                    ? ['PURCHASE_ANY', 'PURCHASE_PLAN'].includes(task.task_type)
+                    : task.cadence === cadence && !['PURCHASE_ANY', 'PURCHASE_PLAN'].includes(task.task_type));
                 const count = document.getElementById(`battlepass-${cadence.toLowerCase()}-count`);
                 const steps = document.getElementById(`battlepass-${cadence.toLowerCase()}-progress`);
                 if (count) {
@@ -2467,7 +2499,9 @@ let connectedWallet = null;
                     }
                 }
                 if (!tasks.length) {
-                    container.innerHTML = '<p class="account-chart-empty">No tasks in this period yet.</p>';
+                    container.innerHTML = isPurchaseCategory
+                        ? '<p class="account-chart-empty">No purchase tasks are available.</p>'
+                        : '<p class="account-chart-empty">No tasks in this period yet.</p>';
                     continue;
                 }
                 container.innerHTML = tasks.map(task => {
@@ -2482,14 +2516,25 @@ let connectedWallet = null;
                     const action = task.task_type === 'SOCIAL_CLICK' && url
                         ? `<a class="battlepass-task-action" href="${safeUrl}" target="_blank" rel="noopener noreferrer" data-task-link="${Number(task.id)}">${task.claimed ? 'Open task again' : 'Open task &amp; earn reward'}</a>`
                         : '';
-                    const isJournalTask = task.task_type === 'JOURNAL_DAY' || task.task_type === 'JOURNAL_WEEK';
+                    const isJournalTask = ['JOURNAL_DAY', 'JOURNAL_WEEK', 'JOURNAL_MONTH'].includes(task.task_type);
+                    const isPurchaseTask = ['PURCHASE_ANY', 'PURCHASE_PLAN'].includes(task.task_type);
+                    const purchaseClaimCount = Number(task.eligible_purchase_count || 0);
+                    const purchaseClaimLabel = purchaseClaimCount > 100
+                        ? `Claim first 100 of ${purchaseClaimCount}`
+                        : `Claim rewards (${purchaseClaimCount})`;
                     const state = task.task_type === 'PLATFORM_REVIEW'
                         ? task.claimed ? 'Earned once' : 'Automatically applied when you submit a review'
+                        : isPurchaseTask && Number(task.eligible_purchase_count) > 0
+                            ? `${Number(task.eligible_purchase_count)} account purchase${Number(task.eligible_purchase_count) === 1 ? '' : 's'} ready to claim`
+                        : isPurchaseTask && Number(task.purchase_count) > 0
+                            ? 'All eligible purchases claimed'
+                        : isPurchaseTask
+                            ? 'Make a new paid plan purchase to unlock'
                         : isJournalTask && !task.claimed && !task.eligible
-                            ? `${Number(task.progress || 0)} of ${Number(task.progress_target || (task.task_type === 'JOURNAL_DAY' ? 1 : 5))} journal days`
+                            ? `${Number(task.progress || 0)} of ${Number(task.progress_target || (task.task_type === 'JOURNAL_DAY' ? 1 : task.task_type === 'JOURNAL_WEEK' ? 5 : 0))} journal days`
                         : task.claimed ? 'Earned this period' : task.eligible ? 'Reward ready to claim' : 'Complete the activity to unlock';
                     const claimButton = !['SOCIAL_CLICK', 'PLATFORM_REVIEW'].includes(task.task_type) && !task.claimed
-                        ? `<button class="btn-wallet" type="button" data-task-claim="${Number(task.id)}" ${task.eligible ? '' : 'disabled'}>${task.eligible ? 'Claim reward' : 'Not ready'}</button>`
+                        ? `<button class="btn-wallet" type="button" data-task-claim="${Number(task.id)}" ${task.eligible ? '' : 'disabled'}>${task.eligible ? isPurchaseTask ? purchaseClaimLabel : 'Claim reward' : 'Not ready'}</button>`
                         : '';
                     const reviewButton = task.task_type === 'PLATFORM_REVIEW' && !task.claimed
                         ? '<button class="battlepass-task-action" type="button" data-review-task>Write a review</button>'
@@ -2498,7 +2543,7 @@ let connectedWallet = null;
                         ? `<details class="battlepass-x-preview"><summary>Preview X post</summary><blockquote class="twitter-tweet"><a href="${xPostUrl}" target="_blank" rel="noopener noreferrer">View post on X</a></blockquote></details>`
                         : '';
                     const journalProgress = isJournalTask
-                        ? `<div class="battlepass-journal-progress" role="progressbar" aria-label="Journal task progress" aria-valuemin="0" aria-valuemax="${Number(task.progress_target || (task.task_type === 'JOURNAL_DAY' ? 1 : 5))}" aria-valuenow="${Number(task.progress || 0)}"><i style="width:${Math.min(100, Number(task.progress || 0) / Number(task.progress_target || 1) * 100)}%"></i></div>`
+                        ? `<div class="battlepass-journal-progress" role="progressbar" aria-label="Journal task progress" aria-valuemin="0" aria-valuemax="${Number(task.progress_target || (task.task_type === 'JOURNAL_DAY' ? 1 : task.task_type === 'JOURNAL_WEEK' ? 5 : 0))}" aria-valuenow="${Number(task.progress || 0)}"><i style="width:${Math.min(100, Number(task.progress || 0) / Number(task.progress_target || 1) * 100)}%"></i></div>`
                         : '';
                     return `<article class="battlepass-task dashboard-tile" data-battlepass-task="${Number(task.id)}">
                         <div class="battlepass-task-copy"><div class="battlepass-task-heading"><strong>${escapeHTML(task.title)}</strong>
@@ -2539,52 +2584,48 @@ let connectedWallet = null;
             if (!container) return;
             const xpTotal = document.getElementById('battlepass-xp');
             if (xpTotal) xpTotal.textContent = Number(battlePassProfile?.xp || 0).toLocaleString();
-            const readyLevels = battlePassLevels.filter(level =>
-                level.unlocked && !level.reward_code && Number(battlePassProfile?.points || 0) >= Number(level.points_cost)
-            );
+            const readyLevels = battlePassLevels.filter(level => level.unlocked && !level.title_claimed);
             const readyTitle = document.getElementById('battlepass-ready-title');
             const readySummary = document.getElementById('battlepass-ready-summary');
             const claimAll = document.getElementById('battlepass-claim-all');
             if (readyTitle) readyTitle.textContent = readyLevels.length
-                ? `${readyLevels.length} reward${readyLevels.length === 1 ? '' : 's'} ready to claim`
-                : 'No rewards ready to claim';
+                ? `${readyLevels.length} title${readyLevels.length === 1 ? '' : 's'} ready to claim`
+                : 'No titles ready to claim';
             if (readySummary) readySummary.textContent = readyLevels.length
-                ? `${readyLevels.reduce((sum, level) => sum + Number(level.points_cost), 0).toLocaleString()} points will claim these level discounts.`
+                ? 'Claim these titles for free; your points are not spent.'
                 : 'Complete missions and purchases to earn XP and points.';
             if (claimAll) {
                 claimAll.disabled = !readyLevels.length;
-                claimAll.textContent = readyLevels.length ? `Claim all (${readyLevels.length})` : 'Claim all';
+                claimAll.textContent = readyLevels.length ? `Claim all titles (${readyLevels.length})` : 'Claim all titles';
                 claimAll.dataset.claimLevels = JSON.stringify(readyLevels.map(level => Number(level.level)));
             }
             container.innerHTML = battlePassLevels.map(level => {
                 const unlocked = Boolean(level.unlocked);
-                const code = level.reward_code;
-                const button = code
-                    ? `<button class="battlepass-task-action" type="button" data-use-reward="${escapeHTML(code)}" ${level.reward_redeemed ? 'disabled' : ''}>${level.reward_redeemed ? 'Used' : 'Use discount'}</button>`
-                    : `<button class="battlepass-task-action" type="button" data-claim-level="${Number(level.level)}" ${unlocked ? '' : 'disabled'}>${unlocked ? 'Claim reward' : 'Locked'}</button>`;
-                const status = code
-                    ? level.reward_redeemed ? 'Discount used' : 'Discount claimed · ready to use'
-                    : unlocked ? 'Reward unlocked · ready to claim' : `Unlock at ${Number(level.xp_required).toLocaleString()} XP`;
+                const claimed = Boolean(level.title_claimed);
+                const button = claimed
+                    ? ''
+                    : `<button class="battlepass-task-action" type="button" data-claim-level="${Number(level.level)}" ${unlocked ? '' : 'disabled'}>${unlocked ? 'Claim title' : 'Locked'}</button>`;
+                const status = claimed
+                    ? 'Title claimed'
+                    : unlocked ? 'Title unlocked · ready to claim' : `Unlock at ${Number(level.xp_required).toLocaleString()} XP`;
                 return `<article class="battlepass-task dashboard-tile battlepass-reward-item">
                     <div class="battlepass-task-copy">
                         <div class="battlepass-task-heading">
-                            <strong>Level ${Number(level.level)} · +${Number(level.discount_bonus_pct)}% discount</strong>
-                            <span class="battlepass-task-awards"><span><i class="battlepass-gem" aria-hidden="true">◆</i> ${Number(level.points_cost)} points</span><span class="battlepass-award-divider"></span><span><i class="battlepass-xp-mark" aria-hidden="true">XP</i> ${Number(level.xp_required).toLocaleString()}</span></span>
+                            <strong>Level ${Number(level.level)} · ${escapeHTML(level.title)}</strong>
+                            <span class="battlepass-task-awards"><span><i class="battlepass-xp-mark" aria-hidden="true">XP</i> ${Number(level.xp_required).toLocaleString()}</span></span>
                         </div>
-                        <div class="battlepass-task-action-row"><span class="battlepass-task-status ${code ? 'is-claimed' : unlocked ? 'is-ready' : ''}">${status}</span>${code ? `<code class="battlepass-reward-code">${escapeHTML(code)}</code>` : ''}${button}</div>
+                        <div class="battlepass-task-action-row"><span class="battlepass-task-status ${claimed ? 'is-claimed' : unlocked ? 'is-ready' : ''}">${status}</span>${button}</div>
                     </div>
                 </article>`;
             }).join('');
             container.onclick = event => {
                 const claimButton = event.target.closest('[data-claim-level]');
-                const useButton = event.target.closest('[data-use-reward]');
                 if (claimButton && !claimButton.disabled) claimBattlePassLevel(claimButton.dataset.claimLevel);
-                if (useButton && !useButton.disabled) usePromoCode(useButton.dataset.useReward);
             };
         }
 
         function selectBattlePassTab(tabName) {
-            const validTabs = ['missions', 'rewards', 'leaderboard', 'profile'];
+            const validTabs = ['missions', 'titles', 'leaderboard', 'profile'];
             if (!validTabs.includes(tabName)) return;
             battlePassActiveTab = tabName;
             document.querySelectorAll('#battlepass-user-content [data-battlepass-tab]').forEach(button => {
@@ -2599,7 +2640,7 @@ let connectedWallet = null;
             });
         }
 
-        async function claimAllBattlePassRewards(button) {
+        async function claimAllBattlePassTitles(button) {
             const levels = JSON.parse(button?.dataset.claimLevels || '[]');
             if (!levels.length) return;
             button.disabled = true;
@@ -2607,7 +2648,7 @@ let connectedWallet = null;
             if (feedback) feedback.textContent = '';
             try {
                 for (const level of levels) {
-                    const response = await walletFetch('/api/battlepass/rewards/claim', {
+                    const response = await walletFetch('/api/battlepass/titles/claim', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ level })
@@ -2615,8 +2656,8 @@ let connectedWallet = null;
                     const data = await response.json();
                     if (!response.ok) throw new Error(data.error || `Unable to claim level ${level}.`);
                 }
-                if (feedback) feedback.textContent = `${levels.length} level reward${levels.length === 1 ? '' : 's'} claimed. Use the codes below at checkout.`;
-                battlePassActiveTab = 'rewards';
+                if (feedback) feedback.textContent = `${levels.length} title${levels.length === 1 ? '' : 's'} claimed.`;
+                battlePassActiveTab = 'titles';
                 await loadBattlePass();
             } catch (error) {
                 console.error(error);
@@ -2651,14 +2692,14 @@ let connectedWallet = null;
             const feedback = document.getElementById('battlepass-reward-feedback');
             if (feedback) feedback.textContent = '';
             try {
-                const response = await walletFetch('/api/battlepass/rewards/claim', {
+                const response = await walletFetch('/api/battlepass/titles/claim', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ level: Number(level) })
                 });
                 const data = await response.json();
-                if (!response.ok) throw new Error(data.error || 'Unable to claim this level reward.');
-                if (feedback) feedback.textContent = `Reward claimed. Use code ${data.code} at checkout for an additional discount.`;
+                if (!response.ok) throw new Error(data.error || 'Unable to claim this level title.');
+                if (feedback) feedback.textContent = `Title claimed: ${data.title}.`;
                 await loadBattlePass();
             } catch (error) {
                 console.error(error);
@@ -2678,18 +2719,19 @@ let connectedWallet = null;
                 const profile = data.profile;
                 const level = Number(profile.level || 0);
                 const xp = Number(profile.xp || 0);
+                const title = profile.title || 'No title claimed';
                 const shareUrl = new URL(window.location.href);
                 shareUrl.searchParams.set('passprofile', profile.username);
                 container.innerHTML = `<div class="card-title">BlastrrPass profile</div>
                     <div class="battlepass-profile-card">
                         <div id="battlepass-public-avatar" class="battlepass-avatar-wrap"></div>
                         <div class="battlepass-profile-details"><strong>@${escapeHTML(profile.username)}</strong>
-                        <span>${level ? `Level ${level}` : 'Unranked'}</span><span>${xp.toLocaleString()} XP (${compactBattlePassXp(xp)})</span></div>
+                        <span>${escapeHTML(title)}</span><span>${level ? `Level ${level}` : 'Unranked'}</span><span>${xp.toLocaleString()} XP (${compactBattlePassXp(xp)})</span></div>
                         <button class="btn-share-x" type="button" id="battlepass-public-share">Share profile on X</button>
                     </div>`;
                 setBattlePassAvatar(document.getElementById('battlepass-public-avatar'), profile.profile_image_url, profile.username);
                 document.getElementById('battlepass-public-share')?.addEventListener('click', () => {
-                    const text = `I'm Level ${level} in BlastrrPass with ${xp.toLocaleString()} XP!`;
+                    const text = `I'm ${title} in BlastrrPass with ${xp.toLocaleString()} XP!`;
                     window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(shareUrl.toString())}`, '_blank', 'noopener,noreferrer');
                 });
             } catch (error) {
@@ -2705,7 +2747,9 @@ let connectedWallet = null;
             url.searchParams.set('passprofile', battlePassProfile.username);
             const level = battlePassLevelForXp(battlePassProfile.xp);
             const xp = Number(battlePassProfile.xp || 0);
-            const text = `I'm ${level ? `Level ${level}` : 'starting out'} in BlastrrPass with ${xp.toLocaleString()} XP (${compactBattlePassXp(xp)})!`;
+            const title = battlePassProfile.title;
+            const rank = title || (level ? `Level ${level}` : 'starting out');
+            const text = `I'm ${rank} in BlastrrPass with ${xp.toLocaleString()} XP (${compactBattlePassXp(xp)})!`;
             window.open(`https://twitter.com/intent/tweet?text=${encodeURIComponent(text)}&url=${encodeURIComponent(url.toString())}`, '_blank', 'noopener,noreferrer');
         }
 
@@ -2733,7 +2777,7 @@ let connectedWallet = null;
         }
 
         async function loadAdminBattlePass() {
-            const levels = document.getElementById('admin-battlepass-level-rewards');
+            const levels = document.getElementById('admin-battlepass-level-titles');
             if (!levels) return;
             levels.innerHTML = '<p class="account-chart-empty">Loading BlastrrPass settings...</p>';
             try {
@@ -2777,22 +2821,20 @@ let connectedWallet = null;
         }
 
         function renderAdminBattlePassLevels(levels) {
-            const container = document.getElementById('admin-battlepass-level-rewards');
+            const container = document.getElementById('admin-battlepass-level-titles');
             if (!container) return;
             container.innerHTML = levels.map(level => `<article class="battlepass-admin-row" data-level="${Number(level.level)}">
                 <strong>Level ${Number(level.level)} · ${Number(level.xp_required).toLocaleString()} XP</strong>
-                <label>Extra discount (%) <input type="number" min="0" max="100" step="0.01" value="${Number(level.discount_bonus_pct)}" data-level-discount></label>
-                <label>Points cost <input type="number" min="0" step="1" value="${Number(level.points_cost)}" data-level-points></label>
-                <button class="btn-wallet" type="button" data-save-level-reward>Save</button>
+                <label>Title <input type="text" minlength="2" maxlength="40" value="${escapeHTML(level.title)}" data-level-title></label>
+                <button class="btn-wallet" type="button" data-save-level-title>Save</button>
             </article>`).join('');
             container.onclick = event => {
-                const button = event.target.closest('[data-save-level-reward]');
+                const button = event.target.closest('[data-save-level-title]');
                 const row = button?.closest('[data-level]');
                 if (!row) return;
                 saveAdminBattlePass('/api/admin/battlepass/levels/save', {
                     level: Number(row.dataset.level),
-                    discount_bonus_pct: Number(row.querySelector('[data-level-discount]').value),
-                    points_cost: Number(row.querySelector('[data-level-points]').value)
+                    title: row.querySelector('[data-level-title]').value
                 }, button);
             };
         }
@@ -3003,6 +3045,7 @@ let connectedWallet = null;
                         <div class="leaderboard-card-stats">
                             <div><small>Promo code</small><code>${escapeHTML(row.discount_code)}</code></div>
                             <div><small>Battle Pass rank</small><span class="battlepass-rank-badge">${battlePassRank}</span></div>
+                            <div><small>Battle Pass title</small><span class="battlepass-rank-badge">${escapeHTML(row.battlepass_title || 'No title claimed')}</span></div>
                             <div><small>XP earned</small><strong>${compactXp}</strong></div>
                         </div>
                         <div class="leaderboard-card-actions">
@@ -3500,6 +3543,8 @@ let connectedWallet = null;
                 disconnectMarketDataStream();
                 resetDashboardToTradeView();
                 userAccounts = [];
+                accountHistoryWallet = null;
+                clearAccountFinancialHistory();
                 accountPerformanceData = { overall: null, accounts: [] };
                 selectedAccountsPerformanceTab = 'overall';
                 renderPerformanceUnavailable();
@@ -3672,7 +3717,10 @@ let connectedWallet = null;
             updateWalletNetworkOptions();
             updatePayoutOptions('account');
             updatePayoutOptions('referral');
+            updateWithdrawalPayoutSummary();
             userAccounts = [];
+            accountHistoryWallet = null;
+            clearAccountFinancialHistory();
             accountPerformanceData = { overall: null, accounts: [] };
             selectedAccountsPerformanceTab = 'overall';
             renderPerformanceUnavailable();
@@ -3689,7 +3737,7 @@ let connectedWallet = null;
             battlePassProfile = null;
             document.getElementById('battlepass-profile-card')?.setAttribute('hidden', '');
             document.getElementById('battlepass-profile-form')?.setAttribute('hidden', '');
-            document.getElementById('battlepass-wallet-note').textContent = 'Connect your wallet to view your XP, points, tasks, and level rewards.';
+            document.getElementById('battlepass-wallet-note').textContent = 'Connect your wallet to view your XP, points, tasks, and level titles.';
 
             updateWalletUIState(false);
             const adminNav = document.getElementById('admin-nav-item');
@@ -3761,10 +3809,329 @@ let connectedWallet = null;
         }
 
         async function loadUserAccounts(wallet, waitForPortfolio = false) {
+            const walletKey = getConnectedWalletOwnerKey() || wallet || null;
+            if (accountHistoryWallet !== walletKey) {
+                clearAccountFinancialHistory();
+                accountHistoryWallet = walletKey;
+            }
             const synced = await silentSyncUserData(wallet);
             const portfolioRender = renderAccountsPortfolioFlickerFree();
             if (waitForPortfolio) await portfolioRender;
             return synced;
+        }
+
+        function clearAccountFinancialHistory() {
+            closeWithdrawalRequest();
+            const withdrawalList = document.getElementById('account-withdrawals-list');
+            const purchaseList = document.getElementById('account-purchases-list');
+            if (withdrawalList) withdrawalList.innerHTML = '<p class="workspace-empty-state">Connect your wallet to view withdrawal history.</p>';
+            if (purchaseList) purchaseList.innerHTML = '<p class="workspace-empty-state">Connect your wallet to view account purchase history.</p>';
+            accountPurchases = [];
+            accountWithdrawals = [];
+            accountStatementOwner = null;
+            const downloadButton = document.getElementById('download-account-purchase-statement');
+            if (downloadButton) downloadButton.disabled = true;
+            const withdrawalDownloadButton = document.getElementById('download-account-withdrawal-statement');
+            if (withdrawalDownloadButton) withdrawalDownloadButton.disabled = true;
+            const withdrawalFeedback = document.getElementById('account-withdrawals-feedback');
+            const purchaseFeedback = document.getElementById('account-purchases-feedback');
+            if (withdrawalFeedback) withdrawalFeedback.textContent = '';
+            if (purchaseFeedback) purchaseFeedback.textContent = '';
+            withdrawalAvailability = [];
+            selectedWithdrawalAccountId = null;
+        }
+
+        function switchAccountsSection(section) {
+            if (!['portfolio', 'withdrawals', 'payments'].includes(section)) return;
+            document.querySelectorAll('[data-accounts-section-tab]').forEach(tab => {
+                const active = tab.dataset.accountsSectionTab === section;
+                tab.classList.toggle('is-active', active);
+                tab.setAttribute('aria-selected', String(active));
+            });
+            document.querySelectorAll('#accountsView [id^="accounts-panel-"]').forEach(panel => {
+                panel.hidden = panel.id !== `accounts-panel-${section}`;
+            });
+            if (section === 'withdrawals') loadAccountWithdrawalHistory();
+            if (section === 'payments') loadAccountPurchaseHistory();
+        }
+
+        function formatAccountCurrency(value) {
+            const amount = Number(value);
+            return `$${(Number.isFinite(amount) ? amount : 0).toLocaleString(undefined, {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            })}`;
+        }
+
+        function formatAccountHistoryDate(value) {
+            if (!value) return '—';
+            const timestamp = String(value).includes('T') ? String(value) : `${String(value).replace(' ', 'T')}Z`;
+            const date = new Date(timestamp);
+            return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString();
+        }
+
+        function transactionHashMarkup(chainId, transactionHash) {
+            if (!transactionHash) return '<span class="account-finance-muted">Transaction ID not added yet</span>';
+            const explorerUrl = getTransactionExplorerUrl(chainId, transactionHash);
+            const displayHash = `${String(transactionHash).slice(0, 10)}…${String(transactionHash).slice(-8)}`;
+            return explorerUrl
+                ? `<a href="${escapeHTML(explorerUrl)}" target="_blank" rel="noopener noreferrer">${escapeHTML(displayHash)}</a>`
+                : `<code>${escapeHTML(transactionHash)}</code>`;
+        }
+
+        async function loadAccountWithdrawalHistory() {
+            const list = document.getElementById('account-withdrawals-list');
+            const feedback = document.getElementById('account-withdrawals-feedback');
+            if (!list) return;
+            if (!connectedWallet) {
+                list.innerHTML = '<p class="workspace-empty-state">Connect your wallet to view withdrawal history.</p>';
+                return;
+            }
+            const walletKey = getConnectedWalletOwnerKey();
+            list.innerHTML = '<p class="workspace-empty-state">Loading withdrawal history…</p>';
+            if (feedback) feedback.textContent = '';
+            try {
+                const response = await walletFetch('/api/user/account-withdrawals');
+                const data = await readApiJson(response, 'Withdrawal history');
+                if (!response.ok) throw new Error(data.error || 'Unable to load withdrawal history.');
+                if (walletKey !== getConnectedWalletOwnerKey()) return;
+                const withdrawals = data.withdrawals || [];
+                accountWithdrawals = withdrawals;
+                accountStatementOwner = data.statement_owner || accountStatementOwner;
+                const downloadButton = document.getElementById('download-account-withdrawal-statement');
+                if (downloadButton) downloadButton.disabled = withdrawals.length === 0;
+                if (!withdrawals.length) {
+                    list.innerHTML = '<p class="workspace-empty-state">No account withdrawals have been requested.</p>';
+                    return;
+                }
+                list.innerHTML = withdrawals.map(withdrawal => {
+                    const status = String(withdrawal.status || 'UNKNOWN').toUpperCase();
+                    const statusClass = ['PENDING', 'APPROVED', 'PAID', 'REJECTED'].includes(status) ? status.toLowerCase() : 'unknown';
+                    const gross = Number(withdrawal.gross_amount) || 0;
+                    const userAmount = withdrawal.user_amount == null ? gross * 0.9 : Number(withdrawal.user_amount);
+                    const destination = withdrawal.payout_chain_id
+                        ? `${escapeHTML(withdrawal.payout_asset || 'USDT')} · ${escapeHTML(getPayoutNetworkLabel(withdrawal.payout_chain_id))}`
+                        : 'Not recorded';
+                    return `
+                        <article class="account-finance-row">
+                            <div class="account-finance-row-main">
+                                <div><strong>${escapeHTML(withdrawal.plan_name || 'Trading account')}</strong><span>Account ${escapeHTML(withdrawal.account_id || '—')}</span></div>
+                                <span class="account-finance-status is-${statusClass}">${escapeHTML(status)}</span>
+                            </div>
+                            <div class="account-finance-row-details">
+                                <div><span>Requested</span><strong>${formatAccountCurrency(gross)} USDT</strong></div>
+                                <div><span>Your share</span><strong>${formatAccountCurrency(userAmount)} USDT</strong></div>
+                                <div><span>Destination</span><strong>${destination}</strong></div>
+                                <div><span>Requested on</span><strong>${escapeHTML(formatAccountHistoryDate(withdrawal.created_at))}</strong></div>
+                                <div class="account-finance-transaction"><span>Transaction ID</span><strong>${transactionHashMarkup(withdrawal.payout_chain_id, withdrawal.payout_tx_hash)}</strong></div>
+                            </div>
+                        </article>
+                    `;
+                }).join('');
+            } catch (error) {
+                if (walletKey !== getConnectedWalletOwnerKey()) return;
+                list.innerHTML = '';
+                if (feedback) feedback.textContent = error.message || 'Unable to load withdrawal history.';
+            }
+        }
+
+        async function loadAccountPurchaseHistory() {
+            const list = document.getElementById('account-purchases-list');
+            const feedback = document.getElementById('account-purchases-feedback');
+            if (!list) return;
+            if (!connectedWallet) {
+                list.innerHTML = '<p class="workspace-empty-state">Connect your wallet to view account purchase history.</p>';
+                return;
+            }
+            const walletKey = getConnectedWalletOwnerKey();
+            list.innerHTML = '<p class="workspace-empty-state">Loading account purchases…</p>';
+            if (feedback) feedback.textContent = '';
+            try {
+                const response = await walletFetch('/api/user/account-purchases');
+                const data = await readApiJson(response, 'Account purchase history');
+                if (!response.ok) throw new Error(data.error || 'Unable to load account purchase history.');
+                if (walletKey !== getConnectedWalletOwnerKey()) return;
+                const purchases = data.purchases || [];
+                accountPurchases = purchases;
+                accountStatementOwner = data.statement_owner || accountStatementOwner;
+                const downloadButton = document.getElementById('download-account-purchase-statement');
+                if (downloadButton) downloadButton.disabled = purchases.length === 0;
+                if (!purchases.length) {
+                    list.innerHTML = '<p class="workspace-empty-state">No verified account purchases found.</p>';
+                    return;
+                }
+                list.innerHTML = purchases.map(purchase => `
+                    <article class="account-finance-row">
+                        <div class="account-finance-row-main">
+                            <div><strong>${escapeHTML(purchase.plan_name || 'Trading account')}</strong><span>${Number(purchase.quantity) || 1} account${Number(purchase.quantity) === 1 ? '' : 's'} purchased</span></div>
+                            <span class="account-finance-status is-paid">VERIFIED</span>
+                        </div>
+                        <div class="account-finance-row-details">
+                            <div><span>Total paid</span><strong>${formatAccountCurrency(purchase.amount_usdt)} USDT</strong></div>
+                            <div><span>Payment asset</span><strong>${escapeHTML(purchase.payment_asset || 'USDT')}</strong></div>
+                            <div><span>Network</span><strong>${escapeHTML(getPayoutNetworkLabel(purchase.chain_id))}</strong></div>
+                            <div><span>Purchased on</span><strong>${escapeHTML(formatAccountHistoryDate(purchase.created_at))}</strong></div>
+                            <div class="account-finance-transaction"><span>Transaction ID</span><strong>${transactionHashMarkup(purchase.chain_id, purchase.tx_hash)}</strong></div>
+                        </div>
+                    </article>
+                `).join('');
+            } catch (error) {
+                if (walletKey !== getConnectedWalletOwnerKey()) return;
+                list.innerHTML = '';
+                if (feedback) feedback.textContent = error.message || 'Unable to load account purchase history.';
+            }
+        }
+
+        function statementDateParts(value) {
+            const rawTimestamp = String(value || '');
+            const timestamp = rawTimestamp.includes('T') ? rawTimestamp : `${rawTimestamp.replace(' ', 'T')}Z`;
+            const date = new Date(timestamp);
+            if (Number.isNaN(date.getTime())) return ['', rawTimestamp, ''];
+            const iso = date.toISOString();
+            const day = new Intl.DateTimeFormat('en-US', { weekday: 'long', timeZone: 'UTC' }).format(date);
+            return [day, iso.slice(0, 10), `${iso.slice(11, 19)} UTC`];
+        }
+
+        function formatStatementAmount(value) {
+            const amount = Number(value);
+            return (Number.isFinite(amount) ? amount : 0).toLocaleString('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2
+            });
+        }
+
+        async function accountStatementLogoDataUrl() {
+            const response = await fetch('/favicon.png');
+            if (!response.ok) throw new Error('Unable to load the Blastrr logo for the statement.');
+            const logoBlob = await response.blob();
+            return new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = () => reject(new Error('Unable to prepare the statement logo.'));
+                reader.readAsDataURL(logoBlob);
+            });
+        }
+
+        async function downloadAccountFinancialStatement(filename, title, columns, rows, feedbackId) {
+            if (!rows.length) return;
+            const feedback = document.getElementById(feedbackId);
+            const owner = { ...(accountStatementOwner || {}) };
+            const profileName = currentUserProfile?.username || '';
+            const walletAddress = connectedWallet || '';
+            try {
+                const logo = await accountStatementLogoDataUrl();
+                const name = owner.name || profileName || 'Not set';
+                const wallet = owner.wallet_address || walletAddress || 'Not available';
+                const tableRows = rows.map(row => `<tr>${row.map(value => `<td>${escapeHTML(value)}</td>`).join('')}</tr>`).join('');
+                const documentHtml = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${escapeHTML(title)} - Blastrr</title>
+<style>
+    @page { size: A4; margin: 18mm; }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: #172033; background: #fff; font: 14px/1.5 Arial, Helvetica, sans-serif; }
+    .sheet { max-width: 900px; margin: 0 auto; padding: 34px; }
+    .letterhead { display: flex; align-items: center; gap: 14px; padding-bottom: 18px; border-bottom: 3px solid #6d35c5; }
+    .letterhead img { width: 52px; height: 52px; object-fit: contain; }
+    .brand { display: grid; gap: 2px; }
+    .brand strong { color: #26123e; font-size: 22px; letter-spacing: .08em; }
+    .brand a { color: #5b2ca0; text-decoration: none; }
+    .document-type { margin-left: auto; color: #4b5563; font-size: 13px; font-weight: 700; text-align: right; }
+    h1 { margin: 24px 0 16px; color: #171326; font-size: 24px; }
+    .owner { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 24px; margin: 0 0 24px; padding: 15px; border: 1px solid #d9dce4; border-radius: 8px; background: #f8f8fb; }
+    .owner div { min-width: 0; }
+    .owner dt { color: #5b6472; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+    .owner dd { margin: 3px 0 0; overflow-wrap: anywhere; }
+    .owner code { font: 12px/1.5 Consolas, monospace; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 10px 9px; border-bottom: 1px solid #e1e4eb; text-align: left; vertical-align: top; }
+    th { background: #f0edf7; color: #33204e; font-size: 11px; text-transform: uppercase; }
+    td:last-child, th:last-child { text-align: right; white-space: nowrap; }
+    footer { margin-top: 30px; padding-top: 12px; border-top: 1px solid #d9dce4; color: #667085; font-size: 11px; }
+    .print-button { margin-top: 22px; padding: 10px 15px; border: 0; border-radius: 6px; background: #6034a6; color: white; font-weight: 700; cursor: pointer; }
+    @media print { .sheet { padding: 0; } .print-button { display: none; } }
+    @media (max-width: 600px) { .sheet { padding: 18px; } .owner { grid-template-columns: 1fr; } .document-type { font-size: 11px; } }
+</style>
+</head>
+<body>
+<main class="sheet">
+    <header class="letterhead">
+        <img src="${logo}" alt="Blastrr logo">
+        <div class="brand"><strong>BLASTRR</strong><a href="https://blastrr.com">https://blastrr.com</a></div>
+        <span class="document-type">ACCOUNT STATEMENT</span>
+    </header>
+    <h1>${escapeHTML(title)}</h1>
+    <dl class="owner">
+        <div><dt>Name / username</dt><dd>${escapeHTML(name)}</dd></div>
+        <div><dt>Wallet</dt><dd><code>${escapeHTML(wallet)}</code></dd></div>
+        <div><dt>Period</dt><dd>All time</dd></div>
+        <div><dt>Generated (UTC)</dt><dd>${escapeHTML(new Date().toISOString().replace('T', ' ').replace('Z', ' UTC'))}</dd></div>
+    </dl>
+    <table>
+        <thead><tr>${columns.map(column => `<th>${escapeHTML(column)}</th>`).join('')}</tr></thead>
+        <tbody>${tableRows || `<tr><td colspan="${columns.length}">No statement entries found.</td></tr>`}</tbody>
+    </table>
+    <footer>Generated from account records available in the Blastrr platform. Visit <a href="https://blastrr.com">blastrr.com</a>.</footer>
+    <button class="print-button" type="button" onclick="window.print()">Print / Save as PDF</button>
+</main>
+</body>
+</html>`;
+                const blobUrl = URL.createObjectURL(new Blob([documentHtml], { type: 'text/html;charset=utf-8' }));
+                const link = document.createElement('a');
+                link.href = blobUrl;
+                link.download = filename;
+                document.body.appendChild(link);
+                link.click();
+                link.remove();
+                window.setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+                if (feedback) feedback.textContent = '';
+            } catch (error) {
+                if (feedback) feedback.textContent = error.message || 'Unable to create the account statement.';
+            }
+        }
+
+        function downloadAccountPurchaseStatement() {
+            const purchases = [...accountPurchases].sort((left, right) => (
+                new Date(String(left.created_at || '').replace(' ', 'T') + (String(left.created_at || '').includes('T') ? '' : 'Z')) -
+                new Date(String(right.created_at || '').replace(' ', 'T') + (String(right.created_at || '').includes('T') ? '' : 'Z'))
+            ));
+            const rows = purchases.map(purchase => [
+                ...statementDateParts(purchase.created_at),
+                formatStatementAmount(purchase.amount_usdt)
+            ]);
+            return downloadAccountFinancialStatement(
+                'account-purchase-statement.html',
+                'Account Purchase Statement',
+                ['Day', 'Date', 'Time (UTC)', 'Amount (USDT)'],
+                rows,
+                'account-purchases-feedback'
+            );
+        }
+
+        function downloadAccountWithdrawalStatement() {
+            const withdrawals = [...accountWithdrawals].sort((left, right) => (
+                new Date(String(left.created_at || '').replace(' ', 'T') + (String(left.created_at || '').includes('T') ? '' : 'Z')) -
+                new Date(String(right.created_at || '').replace(' ', 'T') + (String(right.created_at || '').includes('T') ? '' : 'Z'))
+            ));
+            const rows = withdrawals.map(withdrawal => {
+                const gross = Number(withdrawal.gross_amount) || 0;
+                const netAmount = withdrawal.user_amount == null ? gross * 0.9 : Number(withdrawal.user_amount);
+                return [
+                    ...statementDateParts(withdrawal.created_at),
+                    formatStatementAmount(netAmount),
+                    String(withdrawal.status || 'UNKNOWN').toUpperCase()
+                ];
+            });
+            return downloadAccountFinancialStatement(
+                'account-withdrawal-statement.html',
+                'Account Withdrawal Statement',
+                ['Day', 'Date', 'Time (UTC)', 'Amount (USDT)', 'Status'],
+                rows,
+                'account-withdrawals-feedback'
+            );
         }
 
         async function loadTradeCopyGroups(forceRefresh = false) {
@@ -4791,47 +5158,192 @@ let connectedWallet = null;
         }
 
         async function requestWithdrawal(accountId) {
+            const modal = document.getElementById('withdrawal-request-modal');
+            const feedback = document.getElementById('withdrawal-modal-feedback');
+            if (!connectedWallet) {
+                if (feedback) feedback.textContent = 'Connect the wallet that owns the account to request a withdrawal.';
+                return;
+            }
+            if (!modal) return;
+            switchAccountsSection('withdrawals');
+            const walletKey = getConnectedWalletOwnerKey();
+            if (!modal.open) modal.showModal();
+            if (feedback) feedback.textContent = '';
+            const list = document.getElementById('withdrawal-request-account-list');
+            if (list) list.innerHTML = '<p class="workspace-empty-state">Loading account availability…</p>';
+            withdrawalAvailability = [];
+            selectedWithdrawalAccountId = null;
+            const amount = document.getElementById('withdrawal-request-amount');
+            const submit = document.getElementById('submit-withdrawal-request');
+            if (amount) {
+                amount.value = '';
+                amount.disabled = true;
+                amount.removeAttribute('max');
+            }
+            if (submit) submit.disabled = true;
+            updateWithdrawalAmountSummary();
+            try {
+                const response = await walletFetch('/api/withdrawals/availability');
+                const data = await readApiJson(response, 'Withdrawal availability');
+                if (!response.ok) throw new Error(data.error || 'Unable to load account availability.');
+                if (walletKey !== getConnectedWalletOwnerKey()) return;
+                withdrawalAvailability = data.accounts || [];
+                renderWithdrawalAccountOptions();
+                const requestedAccount = accountId == null
+                    ? null
+                    : withdrawalAvailability.find(account => String(account.account_id) === String(accountId));
+                const preferred = requestedAccount?.can_withdraw ? requestedAccount : null;
+                const firstAvailable = withdrawalAvailability.find(account => account.can_withdraw);
+                if (preferred || (accountId == null && firstAvailable)) {
+                    selectWithdrawalAccount(String((preferred || firstAvailable).account_id));
+                } else if (requestedAccount && feedback) {
+                    feedback.textContent = requestedAccount.unavailable_reason || 'This account is not currently available for withdrawal.';
+                }
+                updateWithdrawalPayoutSummary();
+            } catch (error) {
+                if (walletKey !== getConnectedWalletOwnerKey()) return;
+                if (list) list.innerHTML = '';
+                if (feedback) feedback.textContent = error.message || 'Unable to load account availability.';
+            }
+        }
+
+        function renderWithdrawalAccountOptions() {
+            const list = document.getElementById('withdrawal-request-account-list');
+            const form = document.getElementById('withdrawal-request-form');
+            if (!list) return;
+            if (!withdrawalAvailability.length) {
+                list.innerHTML = '<p class="workspace-empty-state">No trading accounts are available yet. Purchase an account plan to get started.</p>';
+                if (form) form.classList.add('is-disabled');
+                return;
+            }
+            if (form) form.classList.remove('is-disabled');
+            list.innerHTML = withdrawalAvailability.map(account => {
+                const accountId = String(account.account_id);
+                const progress = Math.min(100, Math.max(0, Number(account.balance_progress_pct) || 0));
+                const available = Boolean(account.can_withdraw);
+                return `
+                    <button class="withdrawal-account-choice${available ? '' : ' is-unavailable'}" type="button"
+                        data-withdrawal-account="${escapeHTML(accountId)}" aria-pressed="false" ${available ? '' : 'disabled'}>
+                        <span class="withdrawal-account-choice-heading">
+                            <span><strong>${escapeHTML(account.plan_name || 'Trading account')}</strong><small>Account ${escapeHTML(accountId)}</small></span>
+                            <span class="withdrawal-account-choice-amount">${formatAccountCurrency(account.max_withdrawable)}<small>gross available</small></span>
+                        </span>
+                        <span class="withdrawal-account-choice-details">
+                            <span>Balance ${formatAccountCurrency(account.current_balance)} · Protected balance ${formatAccountCurrency(account.withdrawal_floor)}</span>
+                            <span>${available ? 'Available to request' : escapeHTML(account.unavailable_reason || 'Not currently available')}</span>
+                        </span>
+                        <span class="withdrawal-progress-track" aria-hidden="true"><span style="width:${progress}%"></span></span>
+                        <span class="withdrawal-account-choice-progress">Progress toward protected balance: ${progress.toFixed(0)}%</span>
+                    </button>
+                `;
+            }).join('');
+        }
+
+        function selectWithdrawalAccount(accountId) {
+            const account = withdrawalAvailability.find(item => String(item.account_id) === String(accountId));
+            if (!account || !account.can_withdraw) return;
+            selectedWithdrawalAccountId = String(account.account_id);
+            document.querySelectorAll('[data-withdrawal-account]').forEach(option => {
+                const selected = option.dataset.withdrawalAccount === selectedWithdrawalAccountId;
+                option.classList.toggle('is-selected', selected);
+                option.setAttribute('aria-pressed', String(selected));
+            });
+            const amount = document.getElementById('withdrawal-request-amount');
+            const submit = document.getElementById('submit-withdrawal-request');
+            if (amount) {
+                amount.disabled = false;
+                amount.max = String(Number(account.max_withdrawable).toFixed(2));
+                amount.value = Number(account.max_withdrawable).toFixed(2);
+            }
+            if (submit) submit.disabled = false;
+            const maximum = document.getElementById('withdrawal-max-amount');
+            if (maximum) maximum.textContent = `${formatAccountCurrency(account.max_withdrawable)} USDT`;
+            updateWithdrawalAmountSummary();
+        }
+
+        function updateWithdrawalAmountSummary() {
+            const selected = withdrawalAvailability.find(account => String(account.account_id) === selectedWithdrawalAccountId);
+            const amount = Number(document.getElementById('withdrawal-request-amount')?.value) || 0;
+            const maxAmount = document.getElementById('withdrawal-max-amount');
+            const netAmount = document.getElementById('withdrawal-net-amount');
+            const adminShare = document.getElementById('withdrawal-admin-share');
+            const submit = document.getElementById('submit-withdrawal-request');
+            if (maxAmount) maxAmount.textContent = selected ? `${formatAccountCurrency(selected.max_withdrawable)} USDT` : '$0.00 USDT';
+            if (netAmount) netAmount.textContent = `${formatAccountCurrency(amount * 0.9)} USDT`;
+            if (adminShare) adminShare.textContent = `${formatAccountCurrency(amount * 0.1)} USDT`;
+            if (submit) {
+                submit.disabled = !selected || amount <= 0 || amount > Number(selected.max_withdrawable);
+            }
+        }
+
+        function updateWithdrawalPayoutSummary() {
+            const destination = document.getElementById('withdrawal-payout-destination');
+            if (!destination) return;
             try {
                 const payout = getSelectedPayoutOptions('account');
-                const payoutLabel = `${payout.payout_asset} on ${getPayoutNetworkLabel(payout.payout_chain_id)}`;
-                const detailsRes = await walletFetch(`/api/accounts/details?account_id=${encodeURIComponent(accountId)}&wallet=${encodeURIComponent(connectedWallet)}`);
-                const details = await detailsRes.json();
-                if (!detailsRes.ok || !details || !details.account) { alert(details.error || "Could not fetch account details."); return; }
+                destination.textContent = `${payout.payout_asset} · ${getPayoutNetworkLabel(payout.payout_chain_id)}`;
+            } catch (error) {
+                destination.textContent = error.message || 'Choose a supported network and asset';
+            }
+        }
 
-                const acc = details.account;
-                const availableGross = Number(details.metrics?.withdrawableAmount) || 0;
-                if (details.metrics?.withdrawalPending) {
-                    alert('A withdrawal is already awaiting admin review. Trading remains paused until it is resolved.');
-                    return;
-                }
-                if (availableGross <= 0) {
-                    alert(`Withdrawals are available only from funds above the protected balance of $${Number(details.metrics?.withdrawalFloor || 0).toFixed(2)} USDT.`);
-                    return;
-                }
-                const amountInput = prompt(
-                    `Maximum gross withdrawal: $${availableGross.toFixed(2)} ${payout.payout_asset}.\n` +
-                    `You receive 90% ($${(availableGross * 0.9).toFixed(2)}); admin retains 10% ($${(availableGross * 0.1).toFixed(2)}).\n` +
-                    `Payout destination: ${payoutLabel} to ${connectedWallet}.\n` +
-                    'Your account will pause new trades while the request is reviewed. The gross amount is deducted only if approved.\nEnter gross amount:'
-                );
-                if (!amountInput) return;
-                const amount = parseFloat(amountInput);
+        function closeWithdrawalRequest() {
+            const modal = document.getElementById('withdrawal-request-modal');
+            if (modal?.open) modal.close();
+        }
 
-                if (isNaN(amount) || amount <= 0 || amount > availableGross) {
-                    alert("Invalid amount or exceeds your limit.");
-                    return;
-                }
-
+        async function submitWithdrawalRequest(event) {
+            event.preventDefault();
+            const feedback = document.getElementById('withdrawal-modal-feedback');
+            const selected = withdrawalAvailability.find(account => String(account.account_id) === selectedWithdrawalAccountId);
+            const amountInput = document.getElementById('withdrawal-request-amount');
+            const amount = Math.round(Number(amountInput?.value) * 100) / 100;
+            if (!connectedWallet || !selected || !selected.can_withdraw || !Number.isFinite(amount) ||
+                amount <= 0 || amount > Number(selected.max_withdrawable)) {
+                if (feedback) feedback.textContent = 'Choose an available account and enter an amount within its maximum.';
+                return;
+            }
+            let payout;
+            try {
+                payout = getSelectedPayoutOptions('account');
+            } catch (error) {
+                if (feedback) feedback.textContent = error.message;
+                return;
+            }
+            const submit = document.getElementById('submit-withdrawal-request');
+            if (submit) submit.disabled = true;
+            if (feedback) feedback.textContent = 'Confirm the signed wallet request…';
+            const walletKey = getConnectedWalletOwnerKey();
+            try {
                 const authorization = await signedTradeAuthorization();
-                const res = await fetch('/api/withdrawals/request', {
+                const response = await fetch('/api/withdrawals/request', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ ...authorization, account_id: accountId, amount, ...payout })
+                    body: JSON.stringify({
+                        ...authorization,
+                        wallet_address: connectedWallet,
+                        account_id: selected.account_id,
+                        amount,
+                        ...payout
+                    })
                 });
-                const data = await res.json();
-                if (data.success) { alert(`Withdrawal requested for review.\nGross: $${data.gross_amount.toFixed(2)}\nYou receive: $${data.user_amount.toFixed(2)}\nAdmin share: $${data.admin_share.toFixed(2)}`); loadUserAccounts(connectedWallet); }
-                else alert("Error: " + data.error);
-            } catch (err) { console.error(err); }
+                const data = await readApiJson(response, 'Withdrawal request');
+                if (!response.ok || !data.success) throw new Error(data.error || 'Unable to submit withdrawal request.');
+                if (walletKey !== getConnectedWalletOwnerKey()) return;
+                const historyFeedback = document.getElementById('account-withdrawals-feedback');
+                if (historyFeedback) {
+                    historyFeedback.textContent = `Withdrawal request submitted: ${formatAccountCurrency(data.gross_amount)} gross; you receive ${formatAccountCurrency(data.user_amount)} and the admin share is ${formatAccountCurrency(data.admin_share)}.`;
+                }
+                closeWithdrawalRequest();
+                await Promise.all([
+                    loadAccountWithdrawalHistory(),
+                    loadUserAccounts(connectedWallet)
+                ]);
+            } catch (error) {
+                if (feedback) feedback.textContent = error.message || 'Unable to submit withdrawal request.';
+            } finally {
+                updateWithdrawalAmountSummary();
+            }
         }
 
         async function requestCommissionWithdrawal() {
@@ -8125,7 +8637,7 @@ let connectedWallet = null;
         });
         document.getElementById('battlepass-profile-form')?.addEventListener('submit', saveBattlePassProfileImage);
         document.getElementById('battlepass-share')?.addEventListener('click', shareBattlePassProfile);
-        document.getElementById('battlepass-claim-all')?.addEventListener('click', event => claimAllBattlePassRewards(event.currentTarget));
+        document.getElementById('battlepass-claim-all')?.addEventListener('click', event => claimAllBattlePassTitles(event.currentTarget));
         document.getElementById('battlepass-user-content')?.addEventListener('click', event => {
             const tab = event.target.closest('[data-battlepass-tab]');
             const tabLink = event.target.closest('[data-battlepass-tab-link]');

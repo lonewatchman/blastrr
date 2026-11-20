@@ -26,11 +26,14 @@ test('battle pass task rewards are period-limited and built-in trading tasks are
   assert.match(databaseJs, /'Journal your day'.*'JOURNAL_DAY', 'DAILY', 100, 10/);
   assert.match(databaseJs, /'Journal five days'.*'JOURNAL_WEEK', 'WEEKLY', 500, 50/);
   assert.match(databaseJs, /'JOURNAL_DAY', 'JOURNAL_WEEK'/);
-  assert.match(serverJs, /task\.task_type === 'JOURNAL_DAY' \|\| task\.task_type === 'JOURNAL_WEEK'/);
+  assert.match(databaseJs, /'Journal every day this month'.*'JOURNAL_MONTH', 'MONTHLY', 1000, 100/);
+  assert.match(serverJs, /task\.task_type === 'JOURNAL_DAY' \|\| task\.task_type === 'JOURNAL_WEEK' \|\| task\.task_type === 'JOURNAL_MONTH'/);
   assert.match(serverJs, /COUNT\(DISTINCT j\.day\)/);
-  assert.match(serverJs, /task\.task_type === 'JOURNAL_DAY' \? 1 : 5/);
+  assert.match(serverJs, /task\.task_type === 'JOURNAL_DAY' \? 1[\s\S]*?task\.task_type === 'JOURNAL_WEEK' \? 5/);
+  assert.match(serverJs, /new Date\(Date\.UTC\(year, month, 0\)\)\.getUTCDate\(\)/);
   assert.match(serverJs, /task\.progress_target = target/);
   assert.match(serverJs, /task\.task_type === 'JOURNAL_WEEK' && task\.cadence !== 'WEEKLY'/);
+  assert.match(serverJs, /task\.task_type === 'JOURNAL_MONTH' && task\.cadence !== 'MONTHLY'/);
   assert.match(appJs, /battlepass-journal-progress/);
   assert.match(appJs, /journal days/);
   assert.match(appJs, /await loadBattlePass\(\)/);
@@ -39,6 +42,20 @@ test('battle pass task rewards are period-limited and built-in trading tasks are
   assert.match(serverJs, /date\(COALESCE\(w\.paid_at, w\.created_at\)\)/);
   assert.match(serverJs, /date\(COALESCE\(rw\.paid_at, rw\.created_at\)\)/);
   assert.match(serverJs, /app\.post\('\/api\/battlepass\/tasks\/claim', sensitiveLimiter, requireWalletSession/);
+});
+
+test('purchase missions are grouped separately and can be claimed once per new paid plan account', () => {
+  assert.match(databaseJs, /'PURCHASE_ANY', 'PURCHASE_PLAN'/);
+  assert.match(databaseJs, /cadence TEXT NOT NULL CHECK\(cadence IN \('DAILY', 'WEEKLY', 'MONTHLY', 'ONCE'\)\)/);
+  assert.match(serverJs, /function syncBattlePassPlanTasks/);
+  assert.match(serverJs, /WITH RECURSIVE purchase_units/);
+  assert.match(serverJs, /p\.chain_id > 0 AND p\.amount_usdt > 0/);
+  assert.match(serverJs, /p\.created_at >= \?/);
+  assert.match(serverJs, /c\.period_key = u\.tx_hash \|\| ':' \|\| u\.unit_index/);
+  assert.match(serverJs, /purchase_units_claimed: purchases\.length/);
+  assert.match(appHtml, /id="battlepass-purchases-tasks"/);
+  assert.match(appJs, /PURCHASE_ANY', 'PURCHASE_PLAN/);
+  assert.match(appJs, /Claim first 100 of \$\{purchaseClaimCount\}/);
 });
 
 test('platform reviews award a one-time automatic BlastrrPass reward', () => {
@@ -58,9 +75,9 @@ test('platform reviews award a one-time automatic BlastrrPass reward', () => {
   assert.match(appHtml, /One-time missions/);
 });
 
-test('admin can configure standard discounts, level costs, plan awards, and custom tasks', () => {
+test('admin can configure standard discounts, level titles, plan awards, and custom tasks', () => {
   assert.match(appHtml, /id="admin-battlepass-settings-form"/);
-  assert.match(appHtml, /id="admin-battlepass-level-rewards"/);
+  assert.match(appHtml, /id="admin-battlepass-level-titles"/);
   assert.match(appHtml, /id="admin-battlepass-plan-rewards"/);
   assert.match(appHtml, /id="admin-battlepass-task-form"/);
   assert.match(serverJs, /app\.post\('\/api\/admin\/battlepass\/settings', sensitiveLimiter, requireTradeSignature, requireAdminWallet/);
@@ -70,15 +87,33 @@ test('admin can configure standard discounts, level costs, plan awards, and cust
   assert.match(serverJs, /WHERE id = \? AND is_builtin = 1/);
 });
 
-test('admin level reward editors use full-width rows with usable responsive controls', () => {
-  assert.match(appCss, /\.battlepass-admin-level-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/);
-  assert.match(appCss, /\.battlepass-admin-level-grid \.battlepass-admin-row \{[\s\S]*?grid-template-columns: minmax\(180px, 1\.5fr\) repeat\(2, minmax\(150px, 1fr\)\) auto/);
-  assert.match(appCss, /\.battlepass-admin-level-grid \.battlepass-admin-row \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\); \}/);
-  assert.match(appCss, /\.battlepass-admin-level-grid \.battlepass-admin-row > strong,[\s\S]*?\.battlepass-admin-level-grid \.battlepass-admin-row > button \{ grid-column: 1 \/ -1; \}/);
-  assert.match(appJs, /data-save-level-reward/);
+test('level titles unlock by XP and can be claimed without spending points', () => {
+  const titleClaimRoute = serverJs.slice(
+    serverJs.indexOf("app.post('/api/battlepass/titles/claim'"),
+    serverJs.indexOf("app.get('/api/auth/role'")
+  );
+  assert.match(databaseJs, /title TEXT NOT NULL/);
+  assert.match(databaseJs, /PRIMARY KEY\(wallet_address, level\)/);
+  assert.match(databaseJs, /'Rookie', 'Apprentice', 'Adept'/);
+  assert.match(titleClaimRoute, /battlepass_level_titles/);
+  assert.match(titleClaimRoute, /xp_required/);
+  assert.doesNotMatch(titleClaimRoute, /points_cost|points = points -|battlepass_reward_codes/);
+  assert.doesNotMatch(serverJs, /points\s*=\s*points\s*-/);
+  assert.doesNotMatch(appJs, /points_cost/);
+  assert.match(appHtml, /data-battlepass-tab="titles"/);
+  assert.match(appJs, /Claim these titles for free; your points are not spent\./);
+  assert.match(appJs, /data-level-title/);
 });
 
-test('profile rewards and level discounts are wallet-bound and checkout applies the configured discount', () => {
+test('admin level title editors use full-width rows with usable responsive controls', () => {
+  assert.match(appCss, /\.battlepass-admin-level-grid \{ grid-template-columns: minmax\(0, 1fr\); \}/);
+  assert.match(appCss, /\.battlepass-admin-level-grid \.battlepass-admin-row \{[\s\S]*?grid-template-columns: minmax\(180px, 1\.5fr\) minmax\(180px, 1fr\) auto/);
+  assert.match(appCss, /\.battlepass-admin-level-grid \.battlepass-admin-row \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\); \}/);
+  assert.match(appCss, /\.battlepass-admin-level-grid \.battlepass-admin-row > strong,[\s\S]*?\.battlepass-admin-level-grid \.battlepass-admin-row > button \{ grid-column: 1 \/ -1; \}/);
+  assert.match(appJs, /data-save-level-title/);
+});
+
+test('previously claimed discount codes remain wallet-bound and checkout applies the configured discount', () => {
   assert.match(serverJs, /WHERE code = \? AND LOWER\(wallet_address\) = LOWER\(\?\) AND redeemed_at IS NULL/);
   assert.match(serverJs, /app\.post\('\/api\/accounts\/purchase', sensitiveLimiter, requireWalletSession/);
   assert.match(serverJs, /const totalDiscountPct = Math\.min\(100, standardDiscountPct \+ bonusDiscountPct\)/);
@@ -99,6 +134,10 @@ test('leaderboards and public profile cards include BlastrrPass level and XP', (
   assert.match(appJs, /<small>Battle Pass rank<\/small>/);
   assert.match(appJs, /<small>XP earned<\/small>/);
   assert.match(appHtml, /id="profile-battlepass-avatar"/);
+  assert.match(serverJs, /AS battlepass_title/);
+  assert.match(appJs, /row\.battlepass_title/);
+  assert.match(appJs, /message\.battlepass_title/);
+  assert.match(appJs, /profile\.title/);
   assert.match(appJs, /const battlePassRank = battlePassLevel \? `Level \$\{battlePassLevel\}` : 'Unranked'/);
   assert.match(appJs, /class="battlepass-avatar-wrap leaderboard-avatar"/);
   assert.match(appJs, /row\.profile_image_url, row\.username/);
@@ -108,18 +147,18 @@ test('leaderboards and public profile cards include BlastrrPass level and XP', (
   assert.match(homeHtml, /standardDiscountPct=Number\(data\.standard_discount_pct\?\?90\)/);
 });
 
-test('BlastrrPass dashboard presents missions, rewards, leaderboard, and profile sections', () => {
+test('BlastrrPass dashboard presents missions, titles, leaderboard, and profile sections', () => {
   assert.match(appHtml, /class="battlepass-mission-board"/);
   assert.match(appHtml, /data-battlepass-tab="missions"/);
-  assert.match(appHtml, /data-battlepass-tab="rewards"/);
+  assert.match(appHtml, /data-battlepass-tab="titles"/);
   assert.match(appHtml, /data-battlepass-tab="leaderboard"/);
   assert.match(appHtml, /data-battlepass-tab="profile"/);
   assert.match(appHtml, /id="battlepass-claim-all"/);
   assert.match(appHtml, /id="battlepass-level-segments"/);
-  assert.match(appJs, /function claimAllBattlePassRewards/);
+  assert.match(appJs, /function claimAllBattlePassTitles/);
   assert.match(appJs, /function selectBattlePassTab/);
   assert.match(appJs, /class="battlepass-task dashboard-tile battlepass-reward-item"/);
-  assert.match(appJs, /class="battlepass-reward-code"/);
+  assert.doesNotMatch(appJs, /data-use-reward|battlepass-reward-code/);
   assert.match(appJs, /const defaultImageUrl = '\/favicon\.png'/);
 });
 

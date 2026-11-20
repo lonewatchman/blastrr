@@ -684,7 +684,9 @@ test('account performance summaries include active and soft DLL-locked accounts 
 });
 
 test('payout UI shows the 90/10 split, admin trade review, and account freeze controls', () => {
-  assert.match(appJs, /You receive: \$\$\{data\.user_amount\.toFixed\(2\)\}/);
+  assert.match(appHtml, /You receive \(90%\)/);
+  assert.match(appHtml, /Admin share \(10%\)/);
+  assert.match(appJs, /data\.admin_share/);
   assert.match(appJs, /renderAdminTradeTable/);
   assert.match(appJs, /\/api\/admin\/accounts\/action/);
   assert.match(appJs, /withdrawalPending/);

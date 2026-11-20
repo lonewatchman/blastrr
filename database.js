@@ -426,13 +426,20 @@ function initTables() {
       points_cost INTEGER NOT NULL DEFAULT 0
     )`);
 
+    db.run(`CREATE TABLE IF NOT EXISTS battlepass_level_definitions (
+      level INTEGER PRIMARY KEY,
+      title TEXT NOT NULL,
+      FOREIGN KEY(level) REFERENCES battlepass_levels(level)
+    )`);
+
     db.run(`CREATE TABLE IF NOT EXISTS battlepass_tasks (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       title TEXT NOT NULL,
       description TEXT NOT NULL,
       action_url TEXT NOT NULL DEFAULT 'https://x.com/',
-      task_type TEXT NOT NULL DEFAULT 'SOCIAL_CLICK' CHECK(task_type IN ('SOCIAL_CLICK', 'GREEN_DAY', 'GREEN_WEEK', 'TRADE_DAY', 'WITHDRAWAL', 'PLATFORM_REVIEW', 'JOURNAL_DAY', 'JOURNAL_WEEK')),
+      task_type TEXT NOT NULL DEFAULT 'SOCIAL_CLICK' CHECK(task_type IN ('SOCIAL_CLICK', 'GREEN_DAY', 'GREEN_WEEK', 'TRADE_DAY', 'WITHDRAWAL', 'PLATFORM_REVIEW', 'JOURNAL_DAY', 'JOURNAL_WEEK', 'JOURNAL_MONTH', 'PURCHASE_ANY', 'PURCHASE_PLAN')),
       cadence TEXT NOT NULL DEFAULT 'DAILY' CHECK(cadence IN ('DAILY', 'WEEKLY', 'MONTHLY', 'ONCE')),
+      plan_id INTEGER,
       xp_reward INTEGER NOT NULL,
       points_reward INTEGER NOT NULL,
       active INTEGER NOT NULL DEFAULT 1,
@@ -444,7 +451,7 @@ function initTables() {
       id TEXT PRIMARY KEY,
       wallet_address TEXT NOT NULL,
       task_id INTEGER NOT NULL,
-      cadence TEXT NOT NULL CHECK(cadence IN ('DAILY', 'WEEKLY', 'MONTHLY')),
+      cadence TEXT NOT NULL CHECK(cadence IN ('DAILY', 'WEEKLY', 'MONTHLY', 'ONCE')),
       period_key TEXT NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE(wallet_address, task_id, cadence, period_key),
@@ -470,6 +477,14 @@ function initTables() {
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       redeemed_at DATETIME,
       UNIQUE(wallet_address, level),
+      FOREIGN KEY(level) REFERENCES battlepass_levels(level)
+    )`);
+
+    db.run(`CREATE TABLE IF NOT EXISTS battlepass_level_titles (
+      wallet_address TEXT NOT NULL,
+      level INTEGER NOT NULL,
+      claimed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY(wallet_address, level),
       FOREIGN KEY(level) REFERENCES battlepass_levels(level)
     )`);
 
@@ -571,16 +586,25 @@ function initTables() {
     db.run('CREATE INDEX IF NOT EXISTS idx_promo_codes_created_at ON promo_codes(created_at DESC)');
     db.run('CREATE INDEX IF NOT EXISTS idx_battlepass_claims_wallet ON battlepass_task_claims(wallet_address, created_at DESC)');
     db.run('CREATE INDEX IF NOT EXISTS idx_battlepass_events_wallet ON battlepass_events(wallet_address, created_at DESC)');
+    db.run('CREATE INDEX IF NOT EXISTS idx_battlepass_level_titles_wallet_level ON battlepass_level_titles(wallet_address, level DESC)');
     db.run('INSERT OR IGNORE INTO referral_settings (id, level_two_pct) VALUES (1, 2)');
     db.run('INSERT OR IGNORE INTO plan_seed_state (id, seeded) VALUES (1, 0)');
 
     db.run(
       'INSERT OR IGNORE INTO battlepass_settings (id, standard_discount_pct) VALUES (1, 90)'
     );
+    const levelTitles = [
+      'Rookie', 'Apprentice', 'Adept', 'Specialist', 'Veteran', 'Strategist',
+      'Expert', 'Elite', 'Master', 'Grandmaster', 'Champion', 'Legend'
+    ];
     for (let level = 1; level <= 12; level++) {
       db.run(
         'INSERT OR IGNORE INTO battlepass_levels (level, xp_required, discount_bonus_pct, points_cost) VALUES (?, ?, ?, ?)',
         [level, level * 10000, level, level * 100]
+      );
+      db.run(
+        'INSERT OR IGNORE INTO battlepass_level_definitions (level, title) VALUES (?, ?)',
+        [level, levelTitles[level - 1]]
       );
     }
     db.all("PRAGMA table_info(battlepass_tasks)", (err, columns) => {
@@ -592,7 +616,8 @@ function initTables() {
         ['cadence', "ALTER TABLE battlepass_tasks ADD COLUMN cadence TEXT NOT NULL DEFAULT 'DAILY'"],
         ['action_url', "ALTER TABLE battlepass_tasks ADD COLUMN action_url TEXT NOT NULL DEFAULT 'https://x.com/'"],
         ['task_type', "ALTER TABLE battlepass_tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'SOCIAL_CLICK'"],
-        ['is_builtin', 'ALTER TABLE battlepass_tasks ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0']
+        ['is_builtin', 'ALTER TABLE battlepass_tasks ADD COLUMN is_builtin INTEGER NOT NULL DEFAULT 0'],
+        ['plan_id', 'ALTER TABLE battlepass_tasks ADD COLUMN plan_id INTEGER']
       ];
       const addMissingColumns = (index) => {
         if (index >= requiredColumns.length) return migrateTaskTypeConstraint();
@@ -608,7 +633,7 @@ function initTables() {
       };
       const seedTasks = () => db.run(
         `UPDATE battlepass_tasks SET is_builtin = 1
-         WHERE task_type IN ('GREEN_DAY', 'GREEN_WEEK', 'TRADE_DAY', 'JOURNAL_DAY', 'JOURNAL_WEEK')`,
+         WHERE task_type IN ('GREEN_DAY', 'GREEN_WEEK', 'TRADE_DAY', 'JOURNAL_DAY', 'JOURNAL_WEEK', 'JOURNAL_MONTH', 'PURCHASE_ANY', 'PURCHASE_PLAN')`,
         markErr => {
           if (markErr) {
             console.error('Unable to mark built-in battle pass tasks', markErr.message);
@@ -621,7 +646,9 @@ function initTables() {
             ['Paid withdrawal', 'Claim after a withdrawal is marked paid during this UTC day.', 'WITHDRAWAL', 'DAILY', 500, 50],
             ['Review the platform', 'Submit a review through the internal review form to earn this one-time reward automatically.', 'PLATFORM_REVIEW', 'ONCE', 200, 200],
             ['Journal your day', 'Write or update a journal entry for today to unlock this daily reward.', 'JOURNAL_DAY', 'DAILY', 100, 10],
-            ['Journal five days', 'Write journal entries for five different days this UTC week.', 'JOURNAL_WEEK', 'WEEKLY', 500, 50]
+            ['Journal five days', 'Write journal entries for five different days this UTC week.', 'JOURNAL_WEEK', 'WEEKLY', 500, 50],
+            ['Journal every day this month', 'Write a journal entry for every day in the current UTC month.', 'JOURNAL_MONTH', 'MONTHLY', 1000, 100],
+            ['Buy any plan', 'Claim a reward for each account bought through a verified paid purchase.', 'PURCHASE_ANY', 'ONCE', 500, 50]
           ];
           const seedNext = index => {
             if (index >= defaults.length) return;
@@ -646,6 +673,77 @@ function initTables() {
           seedNext(0);
         }
       );
+      const migrateBattlePassTaskClaims = callback => db.get(
+        "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'battlepass_task_claims'",
+        [],
+        (schemaErr, schema) => {
+          if (schemaErr || !schema?.sql) {
+            console.error('Unable to inspect battlepass_task_claims constraints', schemaErr?.message || 'Table definition not found.');
+            return;
+          }
+          if (schema.sql.includes("'ONCE'")) return callback();
+          db.run('PRAGMA foreign_keys = OFF', pragmaErr => {
+            if (pragmaErr) {
+              console.error('Unable to prepare battlepass claim migration', pragmaErr.message);
+              return;
+            }
+            db.run('BEGIN IMMEDIATE', beginErr => {
+              if (beginErr) {
+                console.error('Unable to start battlepass claim migration', beginErr.message);
+                db.run('PRAGMA foreign_keys = ON');
+                return;
+              }
+              const steps = [
+                `CREATE TABLE battlepass_task_claims_new (
+                  id TEXT PRIMARY KEY,
+                  wallet_address TEXT NOT NULL,
+                  task_id INTEGER NOT NULL,
+                  cadence TEXT NOT NULL CHECK(cadence IN ('DAILY', 'WEEKLY', 'MONTHLY', 'ONCE')),
+                  period_key TEXT NOT NULL,
+                  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                  UNIQUE(wallet_address, task_id, cadence, period_key),
+                  FOREIGN KEY(task_id) REFERENCES battlepass_tasks(id)
+                )`,
+                `INSERT INTO battlepass_task_claims_new
+                 (id, wallet_address, task_id, cadence, period_key, created_at)
+                 SELECT id, wallet_address, task_id, cadence, period_key, created_at
+                 FROM battlepass_task_claims`,
+                'DROP TABLE battlepass_task_claims',
+                'ALTER TABLE battlepass_task_claims_new RENAME TO battlepass_task_claims'
+              ];
+              const runMigrationStep = index => {
+                if (index >= steps.length) {
+                  return db.run('COMMIT', commitErr => {
+                    if (commitErr) {
+                      console.error('Unable to complete battlepass claim migration', commitErr.message);
+                      db.run('ROLLBACK', () => db.run('PRAGMA foreign_keys = ON'));
+                      return;
+                    }
+                    db.run('PRAGMA foreign_keys = ON', foreignKeysErr => {
+                      if (foreignKeysErr) return console.error('Unable to restore database foreign key checks', foreignKeysErr.message);
+                      db.run(
+                        'CREATE INDEX IF NOT EXISTS idx_battlepass_claims_wallet ON battlepass_task_claims(wallet_address, created_at DESC)',
+                        indexErr => {
+                          if (indexErr) return console.error('Unable to recreate the battlepass claims index', indexErr.message);
+                          callback();
+                        }
+                      );
+                    });
+                  });
+                }
+                db.run(steps[index], stepErr => {
+                  if (stepErr) {
+                    console.error('Unable to migrate battlepass claim cadence constraint', stepErr.message);
+                    return db.run('ROLLBACK', () => db.run('PRAGMA foreign_keys = ON'));
+                  }
+                  runMigrationStep(index + 1);
+                });
+              };
+              runMigrationStep(0);
+            });
+          });
+        }
+      );
       const migrateTaskTypeConstraint = () => db.get(
         "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'battlepass_tasks'",
         [],
@@ -654,9 +752,11 @@ function initTables() {
             console.error('Unable to inspect battlepass_tasks constraints', schemaErr?.message || 'Table definition not found.');
             return;
           }
-          if (schema.sql.includes("'TRADE_DAY'") && schema.sql.includes("'PLATFORM_REVIEW'") &&
-              schema.sql.includes("'JOURNAL_DAY'") && schema.sql.includes("'JOURNAL_WEEK'") &&
-              schema.sql.includes("'ONCE'")) return seedTasks();
+          const taskTypes = ['TRADE_DAY', 'PLATFORM_REVIEW', 'JOURNAL_DAY', 'JOURNAL_WEEK',
+            'JOURNAL_MONTH', 'PURCHASE_ANY', 'PURCHASE_PLAN', 'ONCE'];
+          if (taskTypes.every(taskType => schema.sql.includes(`'${taskType}'`))) {
+            return migrateBattlePassTaskClaims(seedTasks);
+          }
           db.run('PRAGMA foreign_keys = OFF', pragmaErr => {
             if (pragmaErr) {
               console.error('Unable to prepare battlepass task migration', pragmaErr.message);
@@ -674,8 +774,9 @@ function initTables() {
                   title TEXT NOT NULL,
                   description TEXT NOT NULL,
                   action_url TEXT NOT NULL DEFAULT 'https://x.com/',
-                  task_type TEXT NOT NULL DEFAULT 'SOCIAL_CLICK' CHECK(task_type IN ('SOCIAL_CLICK', 'GREEN_DAY', 'GREEN_WEEK', 'TRADE_DAY', 'WITHDRAWAL', 'PLATFORM_REVIEW', 'JOURNAL_DAY', 'JOURNAL_WEEK')),
+                  task_type TEXT NOT NULL DEFAULT 'SOCIAL_CLICK' CHECK(task_type IN ('SOCIAL_CLICK', 'GREEN_DAY', 'GREEN_WEEK', 'TRADE_DAY', 'WITHDRAWAL', 'PLATFORM_REVIEW', 'JOURNAL_DAY', 'JOURNAL_WEEK', 'JOURNAL_MONTH', 'PURCHASE_ANY', 'PURCHASE_PLAN')),
                   cadence TEXT NOT NULL DEFAULT 'DAILY' CHECK(cadence IN ('DAILY', 'WEEKLY', 'MONTHLY', 'ONCE')),
+                  plan_id INTEGER,
                   xp_reward INTEGER NOT NULL,
                   points_reward INTEGER NOT NULL,
                   active INTEGER NOT NULL DEFAULT 1,
@@ -683,8 +784,8 @@ function initTables() {
                   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                 )`,
                 `INSERT INTO battlepass_tasks_new
-                 (id, title, description, action_url, task_type, cadence, xp_reward, points_reward, active, is_builtin, created_at)
-                 SELECT id, title, description, action_url, task_type, cadence, xp_reward, points_reward, active, is_builtin, created_at
+                 (id, title, description, action_url, task_type, cadence, plan_id, xp_reward, points_reward, active, is_builtin, created_at)
+                 SELECT id, title, description, action_url, task_type, cadence, plan_id, xp_reward, points_reward, active, is_builtin, created_at
                  FROM battlepass_tasks`,
                 'DROP TABLE battlepass_tasks',
                 'ALTER TABLE battlepass_tasks_new RENAME TO battlepass_tasks'
@@ -699,7 +800,7 @@ function initTables() {
                     }
                     db.run('PRAGMA foreign_keys = ON', foreignKeysErr => {
                       if (foreignKeysErr) console.error('Unable to restore database foreign key checks', foreignKeysErr.message);
-                      seedTasks();
+                      migrateBattlePassTaskClaims(seedTasks);
                     });
                   });
                 }

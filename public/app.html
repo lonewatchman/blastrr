@@ -380,37 +380,103 @@
                 <div><span class="battlepass-eyebrow">YOUR ACCOUNTS</span><h1>Account portfolio</h1></div>
                 <p class="support-note">Review account performance, limits, and status. Expand an account for trade history and daily results.</p>
             </div>
-            <div class="card payout-preference-card">
-                <div class="card-title">Payout network</div>
-                <p class="support-note">Payout options follow the selected wallet type. EVM wallets can only request EVM payouts; Solana wallets can only request Solana payouts.</p>
-                <div class="grid-2">
-                    <div class="form-group"><label for="account-payout-network">Network</label><select id="account-payout-network"></select></div>
-                    <div class="form-group"><label for="account-payout-asset">Asset</label><select id="account-payout-asset"></select></div>
-                </div>
+            <div class="account-main-tabs" role="tablist" aria-label="Account sections">
+                <button class="account-main-tab is-active" type="button" role="tab" aria-selected="true" aria-controls="accounts-panel-portfolio" data-accounts-section-tab="portfolio">Accounts</button>
+                <button class="account-main-tab" type="button" role="tab" aria-selected="false" aria-controls="accounts-panel-withdrawals" data-accounts-section-tab="withdrawals">Withdrawals</button>
+                <button class="account-main-tab" type="button" role="tab" aria-selected="false" aria-controls="accounts-panel-payments" data-accounts-section-tab="payments">Payments</button>
             </div>
-            <section class="account-performance-panel" aria-labelledby="accounts-performance-heading">
-                <div class="account-performance-panel-heading">
-                    <div><span class="battlepass-eyebrow">PORTFOLIO PERFORMANCE</span><h2 id="accounts-performance-heading">Lifetime account performance</h2></div>
-                    <p>Totals include active accounts and soft-locked DLL accounts; MLL-locked accounts are excluded. Per-account summaries only show active accounts.</p>
+            <section id="accounts-panel-portfolio" class="account-section-panel" role="tabpanel" aria-labelledby="accounts-performance-heading">
+                <section class="account-performance-panel" aria-labelledby="accounts-performance-heading">
+                    <div class="account-performance-panel-heading">
+                        <div><span class="battlepass-eyebrow">PORTFOLIO PERFORMANCE</span><h2 id="accounts-performance-heading">Lifetime account performance</h2></div>
+                        <p>Totals include active accounts and soft-locked DLL accounts; MLL-locked accounts are excluded. Per-account summaries only show active accounts.</p>
+                    </div>
+                    <div id="accounts-performance-tabs" class="account-performance-tabs" role="tablist" aria-label="Performance summaries">
+                        <button class="account-performance-tab is-active" type="button" role="tab" aria-selected="true" data-performance-account="overall">Overall</button>
+                    </div>
+                    <div id="accounts-performance-summary" class="performance-summary-grid" role="tabpanel" aria-labelledby="accounts-performance-heading">
+                        <p class="workspace-empty-state">Loading your performance…</p>
+                    </div>
+                </section>
+                <div class="workspace-toolbar">
+                    <button class="battlepass-secondary-button" type="button" onclick="manualRefreshData()">Refresh accounts</button>
+                    <label class="account-filter-toggle">
+                        <input id="show-mll-accounts" type="checkbox" onchange="toggleMllAccounts(this.checked)">
+                        <span>Show MLL-failed accounts</span>
+                    </label>
                 </div>
-                <div id="accounts-performance-tabs" class="account-performance-tabs" role="tablist" aria-label="Performance summaries">
-                    <button class="account-performance-tab is-active" type="button" role="tab" aria-selected="true" data-performance-account="overall">Overall</button>
-                </div>
-                <div id="accounts-performance-summary" class="performance-summary-grid" role="tabpanel" aria-labelledby="accounts-performance-heading">
-                    <p class="workspace-empty-state">Loading your performance…</p>
+                <p id="accounts-copy-trading-status" class="support-feedback accounts-copy-trading-status" role="status" aria-live="polite"></p>
+                <div id="accounts-portfolio-container" class="account-card-list">
+                        <p style="text-align: center; color: #6b7280; padding: 30px;">Connect wallet to view your accounts.</p>
                 </div>
             </section>
-            <div class="workspace-toolbar">
-                <button class="battlepass-secondary-button" type="button" onclick="manualRefreshData()">Refresh accounts</button>
-                <label class="account-filter-toggle">
-                    <input id="show-mll-accounts" type="checkbox" onchange="toggleMllAccounts(this.checked)">
-                    <span>Show MLL-failed accounts</span>
-                </label>
-            </div>
-            <p id="accounts-copy-trading-status" class="support-feedback accounts-copy-trading-status" role="status" aria-live="polite"></p>
-            <div id="accounts-portfolio-container" class="account-card-list">
-                    <p style="text-align: center; color: #6b7280; padding: 30px;">Connect wallet to view your accounts.</p>
-            </div>
+            <section id="accounts-panel-withdrawals" class="account-section-panel" role="tabpanel" aria-labelledby="accounts-withdrawals-heading" hidden>
+                <div class="card payout-preference-card">
+                    <div class="card-title">Withdrawal network</div>
+                    <p class="support-note">Choose where account withdrawals should be sent. EVM wallets can only request EVM payouts; Solana wallets can only request Solana payouts.</p>
+                    <div class="grid-2">
+                        <div class="form-group"><label for="account-payout-network">Network</label><select id="account-payout-network"></select></div>
+                        <div class="form-group"><label for="account-payout-asset">Asset</label><select id="account-payout-asset"></select></div>
+                    </div>
+                </div>
+                <div class="card account-finance-card">
+                    <div class="account-finance-heading">
+                        <div><span class="battlepass-eyebrow">ACCOUNT PAYOUTS</span><h2 id="accounts-withdrawals-heading">Withdrawal history</h2></div>
+                        <div class="account-finance-actions">
+                            <button id="download-account-withdrawal-statement" class="battlepass-secondary-button" type="button" disabled>Download letterhead statement</button>
+                            <button id="refresh-account-withdrawals" class="battlepass-secondary-button" type="button">Refresh</button>
+                            <button id="open-withdrawal-request" class="btn-wallet" type="button">Request withdrawal</button>
+                        </div>
+                    </div>
+                    <p id="account-withdrawals-feedback" class="support-feedback" role="status" aria-live="polite"></p>
+                    <p class="support-note">Download a printable letterhead statement of all account withdrawal requests. Open the file and choose Print / Save as PDF.</p>
+                    <div id="account-withdrawals-list" class="account-finance-list">
+                        <p class="workspace-empty-state">Connect your wallet to view withdrawal history.</p>
+                    </div>
+                </div>
+            </section>
+            <section id="accounts-panel-payments" class="account-section-panel" role="tabpanel" aria-labelledby="accounts-payments-heading" hidden>
+                <div class="card account-finance-card">
+                    <div class="account-finance-heading">
+                        <div><span class="battlepass-eyebrow">ACCOUNT PURCHASES</span><h2 id="accounts-payments-heading">Payment history</h2></div>
+                        <div class="account-finance-actions">
+                            <button id="download-account-purchase-statement" class="battlepass-secondary-button" type="button" disabled>Download letterhead statement</button>
+                            <button id="refresh-account-purchases" class="battlepass-secondary-button" type="button">Refresh</button>
+                        </div>
+                    </div>
+                    <p class="support-note">Verified transactions used to purchase trading accounts. Trades and simulated trading activity are not shown here. Download a printable letterhead statement, then choose Print / Save as PDF.</p>
+                    <p id="account-purchases-feedback" class="support-feedback" role="status" aria-live="polite"></p>
+                    <div id="account-purchases-list" class="account-finance-list">
+                        <p class="workspace-empty-state">Connect your wallet to view account purchase history.</p>
+                    </div>
+                </div>
+            </section>
+            <dialog id="withdrawal-request-modal" class="withdrawal-request-modal" aria-labelledby="withdrawal-modal-title">
+                <div class="withdrawal-modal-content">
+                    <div class="account-finance-heading">
+                        <div><span class="battlepass-eyebrow">NEW ACCOUNT PAYOUT</span><h2 id="withdrawal-modal-title">Request a withdrawal</h2></div>
+                        <button id="close-withdrawal-modal" class="battlepass-secondary-button" type="button" aria-label="Close withdrawal request">Close</button>
+                    </div>
+                    <p class="support-note">Choose an available account and enter a gross amount. The protected balance stays in the account. Trading pauses while the request is under review; funds are deducted if it is approved.</p>
+                    <p id="withdrawal-modal-feedback" class="support-feedback" role="status" aria-live="polite"></p>
+                    <div id="withdrawal-request-account-list" class="withdrawal-account-list">
+                        <p class="workspace-empty-state">Loading account availability…</p>
+                    </div>
+                    <form id="withdrawal-request-form" class="withdrawal-request-form">
+                        <div class="form-group">
+                            <label for="withdrawal-request-amount">Gross amount (USDT)</label>
+                            <input id="withdrawal-request-amount" type="number" min="0.01" step="0.01" required disabled>
+                        </div>
+                        <div class="withdrawal-request-summary">
+                            <div><span>Maximum gross</span><strong id="withdrawal-max-amount">$0.00</strong></div>
+                            <div><span>You receive (90%)</span><strong id="withdrawal-net-amount">$0.00</strong></div>
+                            <div><span>Admin share (10%)</span><strong id="withdrawal-admin-share">$0.00</strong></div>
+                            <div><span>Payout destination</span><strong id="withdrawal-payout-destination">Choose a network</strong></div>
+                        </div>
+                        <button id="submit-withdrawal-request" class="btn-wallet" type="submit" disabled>Submit withdrawal request</button>
+                    </form>
+                </div>
+            </dialog>
         </section>
 
         <section id="copyTradingView" class="view-panel workspace-view">
@@ -500,11 +566,11 @@
                         <span class="battlepass-eyebrow">BLASTRR REWARDS</span>
                         <h1>Rewards Center</h1>
                     </div>
-                    <p id="battlepass-wallet-note" class="support-note">Connect your wallet to view your XP, points, tasks, and level rewards.</p>
+                    <p id="battlepass-wallet-note" class="support-note">Connect your wallet to view your XP, points, tasks, and level titles.</p>
                 </div>
                 <div id="battlepass-profile-card" class="battlepass-player-bar" hidden>
                     <div id="battlepass-avatar-wrap" class="battlepass-avatar-wrap"><span id="battlepass-avatar-fallback">B</span></div>
-                    <div class="battlepass-player-name"><strong id="battlepass-username">Trader</strong><small>BlastrrPass member</small></div>
+                    <div class="battlepass-player-name"><strong id="battlepass-username">Trader</strong><small id="battlepass-title">No title claimed</small></div>
                     <div class="battlepass-level-summary">
                         <div class="battlepass-level-caption"><strong id="battlepass-rank">Unranked</strong><span id="battlepass-progress-label">0 / 10,000 XP</span></div>
                         <div id="battlepass-level-segments" class="battlepass-level-segments" aria-label="Progress to next level"></div>
@@ -514,7 +580,7 @@
                 </div>
                 <nav class="battlepass-tabs" aria-label="BlastrrPass sections">
                     <button type="button" class="battlepass-tab active" data-battlepass-tab="missions" aria-selected="true">Missions</button>
-                    <button type="button" class="battlepass-tab" data-battlepass-tab="rewards" aria-selected="false">Rewards</button>
+                    <button type="button" class="battlepass-tab" data-battlepass-tab="titles" aria-selected="false">Titles</button>
                     <button type="button" class="battlepass-tab" data-battlepass-tab="leaderboard" aria-selected="false">Leaderboard</button>
                     <button type="button" class="battlepass-tab" data-battlepass-tab="profile" aria-selected="false">Profile</button>
                 </nav>
@@ -523,11 +589,19 @@
                         <div class="battlepass-ready-banner">
                             <span class="battlepass-ready-icon" aria-hidden="true">✓</span>
                             <div class="battlepass-ready-copy"><strong id="battlepass-ready-title">Connect wallet to see available rewards</strong><small id="battlepass-ready-summary">Earn XP and points by completing missions and buying plans.</small></div>
-                            <button id="battlepass-claim-all" class="battlepass-claim-all" type="button" disabled>Claim all</button>
-                            <button class="battlepass-text-link" type="button" data-battlepass-tab-link="rewards">See rewards <span aria-hidden="true">⌄</span></button>
+                            <button id="battlepass-claim-all" class="battlepass-claim-all" type="button" disabled>Claim all titles</button>
+                            <button class="battlepass-text-link" type="button" data-battlepass-tab-link="titles">See titles <span aria-hidden="true">⌄</span></button>
                         </div>
                         <p id="battlepass-reward-feedback" class="support-feedback" role="status" aria-live="polite"></p>
                         <div class="battlepass-mission-columns">
+                            <section class="battlepass-mission-group">
+                                <header class="battlepass-mission-group-header">
+                                    <div><h2>Plan purchase missions</h2><span class="battlepass-period-tag">Claim per verified paid account</span></div>
+                                    <span id="battlepass-purchases-count" class="battlepass-mission-count">0 of 0 done</span>
+                                </header>
+                                <div id="battlepass-purchases-progress" class="battlepass-mission-steps" aria-hidden="true"></div>
+                                <div id="battlepass-purchases-tasks" class="battlepass-task-list"></div>
+                            </section>
                             <section class="battlepass-mission-group">
                                 <header class="battlepass-mission-group-header">
                                     <div><h2>Daily missions</h2><span class="battlepass-period-tag">Resets daily · UTC</span></div>
@@ -563,9 +637,9 @@
                         </div>
                     </div>
                 </div>
-                <div id="battlepass-panel-rewards" class="battlepass-panel" data-battlepass-panel="rewards" hidden>
+                <div id="battlepass-panel-titles" class="battlepass-panel" data-battlepass-panel="titles" hidden>
                     <div class="battlepass-section-heading">
-                        <div><h2>Level rewards</h2><p>Earn XP to unlock each tier, then spend points to claim your discount code.</p></div>
+                        <div><h2>Level titles</h2><p>Unlock a title every 10,000 XP. Claiming a title is free; your points remain in your balance.</p></div>
                         <span class="battlepass-xp-total"><strong id="battlepass-xp">0</strong> XP earned</span>
                     </div>
                     <div id="battlepass-level-list" class="battlepass-level-grid"></div>
@@ -1136,13 +1210,13 @@
                     <div id="admin-battlepass-plan-rewards" class="battlepass-admin-list"></div>
                 </div>
                 <div class="card admin-battlepass-settings">
-                    <div class="card-title">Level discount rewards</div>
-                    <p class="support-note">All twelve levels unlock at 10,000 XP intervals, up to 120,000 XP. Admins set each reward's additional discount and point cost.</p>
-                    <div id="admin-battlepass-level-rewards" class="battlepass-admin-level-grid"></div>
+                    <div class="card-title">Level titles</div>
+                    <p class="support-note">All twelve levels unlock at 10,000 XP intervals, up to 120,000 XP. Admins can update the title awarded at each level.</p>
+                    <div id="admin-battlepass-level-titles" class="battlepass-admin-level-grid"></div>
                 </div>
                 <div class="card admin-battlepass-settings">
                     <div class="card-title">Fixed activity rewards</div>
-                    <p class="support-note">Green day and week rewards unlock after profitable UTC periods close. Trade-a-day unlocks after a closed trade; paid-withdrawal unlocks when a payout is marked paid. Admins set XP and points for these fixed tasks.</p>
+                    <p class="support-note">Built-in trade, journal, verified purchase, withdrawal, and review tasks award XP and points when their activity is verified. Admins can adjust the fixed task rewards here.</p>
                     <div id="admin-battlepass-built-in-tasks" class="battlepass-admin-list"></div>
                 </div>
                 <div class="card admin-battlepass-settings">
