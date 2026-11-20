@@ -275,7 +275,7 @@ test('Battle Pass pack cards render nine mapped PNG images and preserve the unkn
     assert.match(artworkSource, new RegExp(`${name.toLowerCase()}: \\{ src: '/images/battlepass/packs/${fileName}' \\}`));
   }
   assert.match(appCss, /\.battlepass-pack-graphic \{[^}]*background: #000;/);
-  assert.match(appCss, /\.battlepass-pack-art \{[^}]*position: absolute; inset: 0;[^}]*width: 100%; height: 100%; object-fit: contain;/);
+  assert.match(appCss, /\.battlepass-pack-art \{[^}]*position: absolute; inset: 0;[^}]*width: 100%; height: 100%; object-fit: contain; object-position: center center;/);
   assert.doesNotMatch(appJs, /blastrr_reward_pack_sprite\.svg/);
 
   const shop = { innerHTML: '', onclick: null };

@@ -2378,7 +2378,7 @@
         .battlepass-pack-card { display: grid; grid-template-columns: minmax(150px, 1fr) minmax(0, 1fr); gap: 16px; padding: 18px; border: 1px solid rgba(167, 139, 250, 0.2); border-radius: 15px; background: linear-gradient(145deg, rgba(20, 17, 29, 0.98), rgba(8, 10, 14, 0.98)); }
         .battlepass-pack-card.is-out-of-stock { opacity: 0.72; }
         .battlepass-pack-graphic { position: relative; display: grid; place-items: center; align-self: center; min-height: 100px; aspect-ratio: 3 / 2; padding: 0; overflow: hidden; border: 1px solid rgba(196, 181, 253, 0.25); border-radius: 13px; background: #000; color: #e9ddff; text-align: center; }
-        .battlepass-pack-art { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; }
+        .battlepass-pack-art { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; object-position: center center; }
         .battlepass-pack-graphic > span { color: #d8b4fe; font-size: 38px; text-shadow: 0 0 22px rgba(167, 139, 250, 0.75); }
         .battlepass-pack-graphic > strong { margin-top: 8px; font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase; }
         .battlepass-pack-graphic.is-opening { animation: battlepass-pack-wobble 0.22s ease-in-out infinite alternate; }
