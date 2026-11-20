@@ -47,6 +47,24 @@ test('admin operations report recorded money flows and protect live reads with t
   assert.match(appJs, /payout_tx_hash: payoutTxHash/);
 });
 
+test('account withdrawals deduct and unlock on approval, then record payment separately', () => {
+  const actionRoute = serverJs.slice(
+    serverJs.indexOf("app.post('/api/admin/withdrawals/action'"),
+    serverJs.indexOf("app.get('/api/trade-copy/groups'")
+  );
+  assert.match(databaseJs, /\['approved_at', 'DATETIME'\]/);
+  assert.match(actionRoute, /action === 'PAID' && !requestedTxHash/);
+  assert.match(actionRoute, /action === 'PAID' && !isCommission\s*\?\s*'APPROVED'/);
+  assert.match(actionRoute, /funds_deducted = CASE WHEN \? = 'APPROVED' THEN 1/);
+  assert.match(actionRoute, /current_balance = current_balance - \?[\s\S]*?updateStatus\(\)/);
+  assert.match(actionRoute, /!wdr\.account_id \|\| action === 'PAID'\) return updateStatus\(\)/);
+  assert.match(serverJs, /status IN \('APPROVED', 'PAID'\)/);
+  assert.match(appJs, /data-withdrawal-action="PAID"[^>]*>Add tx &amp; mark paid/);
+  assert.match(appJs, /const payoutTxHash = action === 'PAID'\s*\? window\.prompt/);
+  assert.match(appHtml, /id="admin-approved-out-total"/);
+  assert.match(appJs, /approved_withdrawal_usdt/);
+});
+
 test('purchase-linked referral provenance is persisted and historical ambiguity is not fabricated', () => {
   assert.match(databaseJs, /purchase_tx_hash TEXT/);
   assert.match(databaseJs, /purchase_chain_id INTEGER/);

@@ -325,6 +325,7 @@ function initTables() {
       payout_asset TEXT NOT NULL DEFAULT 'USDT',
       payout_tx_hash TEXT,
       funds_deducted INTEGER DEFAULT 0,
+      approved_at DATETIME,
       paid_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY(account_id) REFERENCES accounts(id)
@@ -1091,6 +1092,7 @@ function initTables() {
         ['payout_asset', "TEXT NOT NULL DEFAULT 'USDT'"],
         ['payout_tx_hash', 'TEXT'],
         ['funds_deducted', 'INTEGER'],
+        ['approved_at', 'DATETIME'],
         ['paid_at', 'DATETIME']
       ].filter(([name]) => !existing.has(name));
       const addNext = (index) => {

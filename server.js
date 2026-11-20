@@ -2223,11 +2223,14 @@ app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSes
           db.get(
             `SELECT COUNT(*) AS total_requests,
                     SUM(CASE WHEN status = 'PENDING' THEN 1 ELSE 0 END) AS pending_count,
-                   SUM(CASE WHEN status = 'PAID' THEN 1 ELSE 0 END) AS paid_count,
-                            COALESCE(SUM(CASE WHEN status = 'PENDING' AND payout_asset = 'USDT' THEN payout_amount ELSE 0 END), 0) AS pending_usdt,
-                            COALESCE(SUM(CASE WHEN status = 'PENDING' AND payout_asset = 'USDC' THEN payout_amount ELSE 0 END), 0) AS pending_usdc,
-                            COALESCE(SUM(CASE WHEN status = 'PAID' AND payout_asset = 'USDT' THEN payout_amount ELSE 0 END), 0) AS paid_usdt,
-                            COALESCE(SUM(CASE WHEN status = 'PAID' AND payout_asset = 'USDC' THEN payout_amount ELSE 0 END), 0) AS paid_usdc
+                    SUM(CASE WHEN status = 'APPROVED' THEN 1 ELSE 0 END) AS approved_count,
+                    SUM(CASE WHEN status = 'PAID' THEN 1 ELSE 0 END) AS paid_count,
+                    COALESCE(SUM(CASE WHEN status = 'PENDING' AND payout_asset = 'USDT' THEN payout_amount ELSE 0 END), 0) AS pending_usdt,
+                    COALESCE(SUM(CASE WHEN status = 'PENDING' AND payout_asset = 'USDC' THEN payout_amount ELSE 0 END), 0) AS pending_usdc,
+                    COALESCE(SUM(CASE WHEN status = 'APPROVED' AND payout_asset = 'USDT' THEN payout_amount ELSE 0 END), 0) AS approved_usdt,
+                    COALESCE(SUM(CASE WHEN status = 'APPROVED' AND payout_asset = 'USDC' THEN payout_amount ELSE 0 END), 0) AS approved_usdc,
+                    COALESCE(SUM(CASE WHEN status = 'PAID' AND payout_asset = 'USDT' THEN payout_amount ELSE 0 END), 0) AS paid_usdt,
+                    COALESCE(SUM(CASE WHEN status = 'PAID' AND payout_asset = 'USDC' THEN payout_amount ELSE 0 END), 0) AS paid_usdc
              FROM (
                        SELECT status, COALESCE(user_amount, ROUND(amount * 0.9, 2)) AS payout_amount,
                               COALESCE(payout_asset, 'USDT') AS payout_asset
@@ -2264,9 +2267,12 @@ app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSes
                          UNION ALL
                          SELECT 'withdrawal:' || w.id || ':' || w.status AS event_id,
                                 CASE w.status WHEN 'PAID' THEN 'PERFORMANCE_PAYOUT_PAID'
+                                  WHEN 'APPROVED' THEN 'PERFORMANCE_PAYOUT_APPROVED'
                                   WHEN 'REJECTED' THEN 'PERFORMANCE_PAYOUT_REJECTED'
                                   ELSE 'PERFORMANCE_PAYOUT_REQUESTED' END AS event_type,
-                                CASE WHEN w.status = 'PAID' THEN COALESCE(w.paid_at, w.created_at) ELSE w.created_at END AS occurred_at,
+                                CASE WHEN w.status = 'PAID' THEN COALESCE(w.paid_at, w.created_at)
+                                  WHEN w.status = 'APPROVED' THEN COALESCE(w.approved_at, w.created_at)
+                                  ELSE w.created_at END AS occurred_at,
                                 w.wallet_address, COALESCE(u.username, '') AS username,
                                 w.payout_tx_hash AS tx_hash, w.payout_chain_id AS chain_id,
                                 COALESCE(w.user_amount, ROUND(w.amount * 0.9, 2)) AS amount_usdt,
@@ -2322,6 +2328,9 @@ app.get('/api/admin/operations/dashboard', requireWalletSession, requireAdminSes
                               pending_withdrawals: Number(withdrawals?.pending_count || 0),
                               pending_withdrawal_usdt: Number(withdrawals?.pending_usdt || 0),
                               pending_withdrawal_usdc: Number(withdrawals?.pending_usdc || 0),
+                              approved_withdrawals: Number(withdrawals?.approved_count || 0),
+                              approved_withdrawal_usdt: Number(withdrawals?.approved_usdt || 0),
+                              approved_withdrawal_usdc: Number(withdrawals?.approved_usdc || 0),
                               paid_withdrawal_usdt: Number(withdrawals?.paid_usdt || 0),
                               paid_withdrawal_usdc: Number(withdrawals?.paid_usdc || 0),
                               pending_tickets: Number(tickets?.pending_tickets || 0),
@@ -2417,7 +2426,7 @@ app.get('/api/leaderboard', (req, res) => {
       FROM users u
       LEFT JOIN battlepass_users b ON LOWER(b.wallet_address) = LOWER(u.wallet_address)
       JOIN (
-        SELECT wallet_address, amount FROM withdrawals WHERE status = 'PAID'
+        SELECT wallet_address, amount FROM withdrawals WHERE status IN ('APPROVED', 'PAID')
         UNION ALL
         SELECT wallet_address, amount FROM referral_withdrawals WHERE status = 'PAID'
       ) w ON LOWER(u.wallet_address) = LOWER(w.wallet_address)
@@ -4684,7 +4693,8 @@ app.post('/api/withdrawals/request', sensitiveLimiter, requireTradeSignature, re
 
 function loadAdminWithdrawals(req, res) {
   db.all(
-    `SELECT w.id, w.account_id, w.wallet_address, w.amount, w.status, w.created_at, w.funds_deducted,
+    `SELECT w.id, w.account_id, w.wallet_address, w.amount, w.status, w.created_at, w.approved_at,
+     w.payout_tx_hash, w.funds_deducted,
      'ACCOUNT' as type, p.name as plan_name, w.user_ip, a.current_balance AS account_balance,
      a.initial_balance, a.high_water_mark, a.admin_frozen, a.admin_freeze_reason,
      COALESCE(u.username, '') AS username,
@@ -4697,7 +4707,8 @@ function loadAdminWithdrawals(req, res) {
      JOIN plans p ON a.plan_id = p.id
      LEFT JOIN users u ON LOWER(u.wallet_address) = LOWER(w.wallet_address)
      UNION ALL
-     SELECT id as id, NULL as account_id, wallet_address, amount, status, created_at, NULL AS funds_deducted,
+     SELECT id as id, NULL as account_id, wallet_address, amount, status, created_at,
+      NULL AS approved_at, payout_tx_hash, NULL AS funds_deducted,
       'COMMISSION' as type, 'Referral Commission' as plan_name, NULL AS user_ip, NULL as account_balance,
       NULL AS initial_balance, NULL AS high_water_mark, NULL AS admin_frozen,
       NULL AS admin_freeze_reason,
@@ -5139,16 +5150,16 @@ app.post('/api/admin/accounts/action', sensitiveLimiter, requireTradeSignature, 
 
 app.post('/api/admin/withdrawals/action', sensitiveLimiter, requireTradeSignature, requireAdminWallet, (req, res) => {
   const { withdrawal_id, action, type } = req.body;
-  const normalizedAction = action === 'APPROVE' ? 'PAID' : action;
   const requestedTxHash = typeof req.body?.payout_tx_hash === 'string' ? req.body.payout_tx_hash.trim() : '';
-  if (!withdrawal_id || !['REJECT', 'PAID'].includes(normalizedAction) || !['ACCOUNT', 'COMMISSION'].includes(type)) {
+  const isCommission = type === 'COMMISSION';
+  const validActions = isCommission ? ['REJECT', 'PAID'] : ['APPROVE', 'REJECT', 'PAID'];
+  if (!withdrawal_id || !validActions.includes(action) || !['ACCOUNT', 'COMMISSION'].includes(type)) {
     return res.status(400).json({ error: "A valid withdrawal ID and action are required." });
   }
-  if (normalizedAction === 'PAID' && !requestedTxHash) {
+  if (action === 'PAID' && !requestedTxHash) {
     return res.status(400).json({ error: 'Enter the payout transaction ID before marking this withdrawal paid.' });
   }
 
-  const isCommission = type === 'COMMISSION';
   const tableName = isCommission ? 'referral_withdrawals' : 'withdrawals';
   db.serialize(() => {
     db.run('BEGIN IMMEDIATE', (beginErr) => {
@@ -5157,34 +5168,76 @@ app.post('/api/admin/withdrawals/action', sensitiveLimiter, requireTradeSignatur
         const rollback = (status, error) => db.run('ROLLBACK', () => res.status(status).json({ error }));
         if (err) return rollback(500, 'Unable to load withdrawal request.');
         if (!wdr) return rollback(404, 'Withdrawal request not found.');
-        if (wdr.status !== 'PENDING') return rollback(409, 'Request already processed.');
+        if (action === 'APPROVE' && !wdr.account_id) {
+          return rollback(409, 'This withdrawal is not linked to an account and cannot be approved.');
+        }
+        const expectedStatus = action === 'APPROVE'
+          ? 'PENDING'
+          : action === 'PAID' && !isCommission
+            ? 'APPROVED'
+            : action === 'PAID'
+              ? 'PENDING'
+              : null;
+        const allowedForRejection = !isCommission && ['PENDING', 'APPROVED'].includes(wdr.status);
+        if (expectedStatus && wdr.status !== expectedStatus) {
+          return rollback(409, action === 'PAID' && !isCommission
+            ? 'Approve this withdrawal before marking it paid.'
+            : 'Request already processed.');
+        }
+        if (action === 'REJECT' && !(isCommission ? wdr.status === 'PENDING' : allowedForRejection)) {
+          return rollback(409, 'Request already processed.');
+        }
 
         let payoutTxHash = null;
+        const nextStatus = action === 'APPROVE' ? 'APPROVED' : action === 'REJECT' ? 'REJECTED' : 'PAID';
         const updateStatus = () => db.run(
-          `UPDATE ${tableName} SET status = ?, paid_at = CASE WHEN ? = 'PAID' THEN CURRENT_TIMESTAMP ELSE paid_at END,
-           payout_tx_hash = CASE WHEN ? = 'PAID' THEN ? ELSE payout_tx_hash END${isCommission ? '' : ", funds_deducted = CASE WHEN ? = 'PAID' THEN 1 ELSE funds_deducted END"}
-           WHERE id = ? AND status = 'PENDING'`,
           isCommission
-            ? [normalizedAction === 'REJECT' ? 'REJECTED' : 'PAID', normalizedAction, normalizedAction, payoutTxHash, withdrawal_id]
-            : [normalizedAction === 'REJECT' ? 'REJECTED' : 'PAID', normalizedAction, normalizedAction, payoutTxHash, normalizedAction, withdrawal_id],
+            ? `UPDATE ${tableName} SET status = ?,
+               paid_at = CASE WHEN ? = 'PAID' THEN CURRENT_TIMESTAMP ELSE paid_at END,
+               payout_tx_hash = CASE WHEN ? = 'PAID' THEN ? ELSE payout_tx_hash END
+               WHERE id = ? AND status = ?`
+            : `UPDATE ${tableName} SET status = ?,
+               approved_at = CASE WHEN ? = 'APPROVED' THEN CURRENT_TIMESTAMP ELSE approved_at END,
+               paid_at = CASE WHEN ? = 'PAID' THEN CURRENT_TIMESTAMP ELSE paid_at END,
+               payout_tx_hash = CASE WHEN ? = 'PAID' THEN ? ELSE payout_tx_hash END,
+               funds_deducted = CASE WHEN ? = 'APPROVED' THEN 1 WHEN ? = 'REJECTED' THEN 0 ELSE funds_deducted END
+               WHERE id = ? AND status = ?`,
+          isCommission
+            ? [nextStatus, nextStatus, nextStatus, payoutTxHash, withdrawal_id, wdr.status]
+            : [nextStatus, nextStatus, nextStatus, nextStatus, payoutTxHash, nextStatus, nextStatus, withdrawal_id, wdr.status],
           function(updateErr) {
             if (updateErr) return rollback(updateErr.code === 'SQLITE_CONSTRAINT' ? 409 : 500,
               updateErr.code === 'SQLITE_CONSTRAINT' ? 'This transaction ID has already been used.' : 'Unable to update withdrawal status.');
             if (this.changes !== 1) return rollback(409, 'Request already processed.');
             db.run('COMMIT', (commitErr) => {
               if (commitErr) return rollback(500, 'Unable to commit withdrawal update.');
-              res.json({ success: true, message: `Withdrawal marked as ${normalizedAction}.` });
+              const message = action === 'APPROVE'
+                ? 'Withdrawal approved. The account balance was deducted and trading is available again; record the payout transaction when it is sent.'
+                : action === 'PAID'
+                  ? 'Withdrawal marked as paid.'
+                  : 'Withdrawal rejected.';
+              res.json({ success: true, message });
             });
           }
         );
 
         const processWithdrawal = () => {
-          if (isCommission || !wdr.account_id) return updateStatus();
-          if (normalizedAction === 'REJECT') {
+          if (isCommission || !wdr.account_id || action === 'PAID') return updateStatus();
+          if (action === 'REJECT') {
             if (Number(wdr.funds_deducted) !== 1) return updateStatus();
+            const refundSql = wdr.status === 'APPROVED'
+              ? `UPDATE accounts
+                 SET current_balance = current_balance + ?,
+                     current_equity = current_equity + ?,
+                     daily_starting_balance = daily_starting_balance + ?
+                 WHERE id = ?`
+              : `UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?`;
+            const refundParams = wdr.status === 'APPROVED'
+              ? [wdr.amount, wdr.amount, wdr.amount, wdr.account_id]
+              : [wdr.amount, wdr.account_id];
             return db.run(
-              `UPDATE accounts SET current_balance = current_balance + ? WHERE id = ?`,
-              [wdr.amount, wdr.account_id],
+              refundSql,
+              refundParams,
               (refundErr) => {
                 if (refundErr) return rollback(500, 'Unable to return previously reserved withdrawal funds.');
                 updateStatus();
@@ -5230,7 +5283,7 @@ app.post('/api/admin/withdrawals/action', sensitiveLimiter, requireTradeSignatur
           );
         };
 
-        if (normalizedAction === 'REJECT') return processWithdrawal();
+        if (action === 'REJECT' || action === 'APPROVE') return processWithdrawal();
         const payoutChainId = Number(wdr.payout_chain_id);
         const payoutAsset = String(wdr.payout_asset || 'USDT').toUpperCase();
         const isSolanaPayout = payoutChainId === 101;
@@ -6237,7 +6290,7 @@ app.get('/api/chat/messages', (req, res) => {
        COALESCE(NULLIF(u.username, ''), 'Trader') AS username,
      COALESCE(NULLIF(u.discount_code, ''), '') AS referral_code,
      COALESCE(b.xp, 0) AS battlepass_xp, COALESCE(b.points, 0) AS battlepass_points, b.profile_image_url,
-     COALESCE((SELECT SUM(w.amount) FROM withdrawals w WHERE LOWER(w.wallet_address) = LOWER(c.wallet_address) AND w.status = 'PAID'), 0)
+     COALESCE((SELECT SUM(w.amount) FROM withdrawals w WHERE LOWER(w.wallet_address) = LOWER(c.wallet_address) AND w.status IN ('APPROVED', 'PAID')), 0)
        + COALESCE((SELECT SUM(rw.amount) FROM referral_withdrawals rw WHERE LOWER(rw.wallet_address) = LOWER(c.wallet_address) AND rw.status = 'PAID'), 0) AS total_payouts,
      c.body, c.created_at
      FROM public_chat_messages c
@@ -6314,7 +6367,7 @@ app.post('/api/chat/messages', sensitiveLimiter, requireWalletSession, requireUs
              COALESCE(NULLIF(u.username, ''), 'Trader') AS username,
              COALESCE(NULLIF(u.discount_code, ''), '') AS referral_code,
              COALESCE(b.xp, 0) AS battlepass_xp, COALESCE(b.points, 0) AS battlepass_points, b.profile_image_url,
-             COALESCE((SELECT SUM(w.amount) FROM withdrawals w WHERE LOWER(w.wallet_address) = LOWER(c.wallet_address) AND w.status = 'PAID'), 0)
+             COALESCE((SELECT SUM(w.amount) FROM withdrawals w WHERE LOWER(w.wallet_address) = LOWER(c.wallet_address) AND w.status IN ('APPROVED', 'PAID')), 0)
                + COALESCE((SELECT SUM(rw.amount) FROM referral_withdrawals rw WHERE LOWER(rw.wallet_address) = LOWER(c.wallet_address) AND rw.status = 'PAID'), 0) AS total_payouts,
              c.body, c.created_at
            FROM public_chat_messages c

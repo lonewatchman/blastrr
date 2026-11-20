@@ -2918,7 +2918,7 @@ let connectedWallet = null;
             } else if (mode === 'PAYOUTS') {
                 document.getElementById('lb-btn-payouts')?.classList.add('active');
                 if (colHeader) colHeader.innerText = 'Total Lifetime Payouts';
-                if (subtitle) subtitle.innerText = 'Cumulative total USDT withdrawals approved and paid out by admins.';
+                if (subtitle) subtitle.innerText = 'Cumulative USDT trading payouts approved by admins, including payouts awaiting payment.';
             }
 
             loadLeaderboard(mode);
@@ -4912,6 +4912,7 @@ let connectedWallet = null;
             switch (event.event_type) {
                 case 'ACCOUNT_PURCHASE': return `${walletLabel} purchased ${event.plan_name} ×${event.quantity}`;
                 case 'PERFORMANCE_PAYOUT_REQUESTED': return `${walletLabel} requested a trading performance payout`;
+                case 'PERFORMANCE_PAYOUT_APPROVED': return `Trading performance payout approved for ${walletLabel}`;
                 case 'PERFORMANCE_PAYOUT_PAID': return `Trading performance payout paid to ${walletLabel}`;
                 case 'PERFORMANCE_PAYOUT_REJECTED': return `Trading performance payout rejected for ${walletLabel}`;
                 case 'REFERRAL_PAYOUT_REQUESTED': return `${walletLabel} requested a referral payout`;
@@ -5004,6 +5005,8 @@ let connectedWallet = null;
                 setText('admin-withdrawal-count', Number(metrics.withdrawal_requests || 0).toLocaleString());
                 setText('admin-pending-out-total', formatAdminStablecoinTotals(metrics.pending_withdrawal_usdt, metrics.pending_withdrawal_usdc));
                 setText('admin-pending-out-count', `${Number(metrics.pending_withdrawals || 0).toLocaleString()} requests awaiting review`);
+                setText('admin-approved-out-total', formatAdminStablecoinTotals(metrics.approved_withdrawal_usdt, metrics.approved_withdrawal_usdc));
+                setText('admin-approved-out-count', `${Number(metrics.approved_withdrawals || 0).toLocaleString()} approved payouts awaiting payment`);
                 setText('admin-open-tickets', Number(metrics.pending_tickets || 0).toLocaleString());
                 setText('admin-pending-reviews', Number(metrics.pending_reviews || 0).toLocaleString());
                 const salesCaveat = document.getElementById('admin-sales-caveat');
@@ -5014,6 +5017,7 @@ let connectedWallet = null;
                 const adminNav = document.getElementById('admin-nav-item');
                 if (adminNav) {
                     const totalPending = Number(metrics.pending_withdrawals || 0) +
+                        Number(metrics.approved_withdrawals || 0) +
                         Number(metrics.pending_tickets || 0) + Number(metrics.pending_reviews || 0);
                     adminNav.innerHTML = `Admin Control${totalPending ? ` <span class="admin-nav-badge">${totalPending}</span>` : ''}`;
                 }
@@ -5334,12 +5338,22 @@ let connectedWallet = null;
                 }
 
                 data.withdrawals.forEach(w => {
-                    let statusColor = w.status === 'PAID' ? '#34d399' : (w.status === 'REJECTED' ? '#ef4444' : '#fbbf24');
-                    let actionsHtml = w.status === 'PENDING' ? `
-                        <button class="btn-wallet" style="padding: 4px 10px; font-size: 11px; background: #059669;" data-withdrawal-id="${escapeHTML(w.id)}" data-withdrawal-action="APPROVE" data-withdrawal-type="${escapeHTML(w.type)}">${w.type === 'ACCOUNT' ? 'Approve payout' : 'Mark paid'}</button>
-                        <button class="btn-sell" style="padding: 4px 10px; font-size: 11px;" data-withdrawal-id="${escapeHTML(w.id)}" data-withdrawal-action="REJECT" data-withdrawal-type="${escapeHTML(w.type)}">Reject</button>
-                        ${w.type === 'ACCOUNT' ? `<button class="btn-sell" style="padding: 4px 10px; font-size: 11px;" data-admin-account-id="${escapeHTML(w.account_id)}" data-admin-account-action="FREEZE">Freeze account</button>` : ''}
-                    ` : `<span style="color: #9ca3af;">Processed</span>`;
+                    const statusColor = w.status === 'PAID' ? '#34d399'
+                        : w.status === 'APPROVED' ? '#60a5fa'
+                            : w.status === 'REJECTED' ? '#ef4444' : '#fbbf24';
+                    let actionsHtml = '<span style="color: #9ca3af;">Processed</span>';
+                    if (w.status === 'PENDING') {
+                        actionsHtml = `
+                            <button class="btn-wallet" style="padding: 4px 10px; font-size: 11px; background: #059669;" data-withdrawal-id="${escapeHTML(w.id)}" data-withdrawal-action="${w.type === 'ACCOUNT' ? 'APPROVE' : 'PAID'}" data-withdrawal-type="${escapeHTML(w.type)}">${w.type === 'ACCOUNT' ? 'Approve payout' : 'Mark paid'}</button>
+                            <button class="btn-sell" style="padding: 4px 10px; font-size: 11px;" data-withdrawal-id="${escapeHTML(w.id)}" data-withdrawal-action="REJECT" data-withdrawal-type="${escapeHTML(w.type)}">Reject</button>
+                            ${w.type === 'ACCOUNT' ? `<button class="btn-sell" style="padding: 4px 10px; font-size: 11px;" data-admin-account-id="${escapeHTML(w.account_id)}" data-admin-account-action="FREEZE">Freeze account</button>` : ''}
+                        `;
+                    } else if (w.status === 'APPROVED' && w.type === 'ACCOUNT') {
+                        actionsHtml = `
+                            <button class="btn-wallet" style="padding: 4px 10px; font-size: 11px; background: #059669;" data-withdrawal-id="${escapeHTML(w.id)}" data-withdrawal-action="PAID" data-withdrawal-type="ACCOUNT">Add tx &amp; mark paid</button>
+                            <button class="btn-sell" style="padding: 4px 10px; font-size: 11px;" data-withdrawal-id="${escapeHTML(w.id)}" data-withdrawal-action="REJECT" data-withdrawal-type="ACCOUNT">Reject &amp; return funds</button>
+                        `;
+                    }
                     const accountDetails = w.type === 'ACCOUNT'
                         ? `<strong>${escapeHTML(w.plan_name)}</strong><br>Balance: ${escapeHTML(formatAdminUsdt(w.account_balance))}<br>${Number(w.admin_frozen) ? 'Admin freeze: ' + escapeHTML(w.admin_freeze_reason || 'active') : (w.trades?.some(trade => trade.status === 'OPEN') ? 'Open trades: ' + w.trades.filter(trade => trade.status === 'OPEN').length : 'No open trades')}`
                         : `<strong>${escapeHTML(w.plan_name)}</strong>`;
@@ -5356,7 +5370,7 @@ let connectedWallet = null;
                             <td>${w.username ? `<strong>@${escapeHTML(w.username)}</strong><br>` : ''}<code style="color: #c084fc;" title="${escapeHTML(w.wallet_address)}">${escapeHTML(String(w.wallet_address || '').substring(0,6))}...${escapeHTML(String(w.wallet_address || '').slice(-4))}</code></td>
                             <td>${accountDetails}${investigationHtml}</td>
                             <td>${amountDetails}</td>
-                            <td><span style="color: ${statusColor}; font-weight: bold;">${w.status}</span></td>
+                            <td><span style="color: ${statusColor}; font-weight: bold;">${w.status}</span>${w.approved_at ? `<br><small>Approved ${escapeHTML(new Date(w.approved_at).toLocaleString())}</small>` : ''}${w.payout_tx_hash ? `<br><code title="${escapeHTML(w.payout_tx_hash)}">${escapeHTML(String(w.payout_tx_hash).slice(0, 14))}…</code>` : ''}</td>
                             <td>${actionsHtml}</td>
                         </tr>
                     `;
@@ -6379,13 +6393,18 @@ let connectedWallet = null;
         }
 
         async function processWithdrawal(withdrawalId, action, type) {
-            const payoutTxHash = action === 'APPROVE'
+            const payoutTxHash = action === 'PAID'
                 ? window.prompt('Enter the payout transaction ID (EVM transaction hash or Solana signature):')?.trim()
                 : '';
-            if (action === 'APPROVE' && !payoutTxHash) return;
-            if (!confirm(action === 'APPROVE'
-                ? `Confirm the payout was sent with transaction ID ${payoutTxHash}? The gross amount will be deducted from the account and 90% paid to the user.`
-                : `Reject this withdrawal request? No account funds have been deducted.`)) return;
+            if (action === 'PAID' && !payoutTxHash) return;
+            const confirmation = action === 'APPROVE'
+                ? 'Approve this payout? The gross amount will be deducted from the account and trading will be unlocked. You can record the payout transaction later.'
+                : action === 'PAID'
+                    ? `Confirm this payout was sent with transaction ID ${payoutTxHash}?`
+                    : type === 'ACCOUNT'
+                        ? 'Reject this withdrawal? Any previously deducted account funds will be returned.'
+                        : 'Reject this referral payout request?';
+            if (!confirm(confirmation)) return;
             try {
                 const authorization = await signedTradeAuthorization();
                 const res = await fetch('/api/admin/withdrawals/action', {
