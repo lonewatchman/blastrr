@@ -5393,8 +5393,12 @@ let connectedWallet = null;
         }
 
         function isActivePortfolioAccount(account) {
-            return account?.status === 'ACTIVE' &&
-                !account.lock_reason &&
+            const isUnlockedActiveAccount = account?.status === 'ACTIVE' &&
+                !account.lock_reason;
+            const isSoftDllLockedAccount = account?.status === 'LOCKED' &&
+                account.lock_reason === 'DLL' &&
+                Number(account.permanent_lock) !== 1;
+            return (isUnlockedActiveAccount || isSoftDllLockedAccount) &&
                 Number(account.permanent_lock) !== 1 &&
                 Number(account.admin_frozen) !== 1;
         }

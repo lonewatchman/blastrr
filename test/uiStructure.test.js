@@ -811,6 +811,43 @@ test('expanded accounts show a responsive daily trade calendar and save text-onl
   assert.match(appCss, /@media \(max-width: 700px\)[\s\S]*?\.account-calendar-day \{ min-height: 69px/);
 });
 
+test('portfolio visibility includes temporary DLL locks but not permanent locks by default', () => {
+  const helper = appJs.match(/function isActivePortfolioAccount\(account\) \{[\s\S]*?\n        \}/);
+  assert.ok(helper);
+  const isActivePortfolioAccount = new vm.Script(`${helper[0]}\nisActivePortfolioAccount`).runInNewContext();
+
+  assert.equal(isActivePortfolioAccount({
+    status: 'ACTIVE',
+    lock_reason: null,
+    permanent_lock: 0,
+    admin_frozen: 0
+  }), true);
+  assert.equal(isActivePortfolioAccount({
+    status: 'LOCKED',
+    lock_reason: 'DLL',
+    permanent_lock: 0,
+    admin_frozen: 0
+  }), true);
+  assert.equal(isActivePortfolioAccount({
+    status: 'PERMANENTLY_LOCKED',
+    lock_reason: 'MLL',
+    permanent_lock: 1,
+    admin_frozen: 0
+  }), false);
+  assert.equal(isActivePortfolioAccount({
+    status: 'LOCKED',
+    lock_reason: 'DLL',
+    permanent_lock: 1,
+    admin_frozen: 0
+  }), false);
+  assert.equal(isActivePortfolioAccount({
+    status: 'LOCKED',
+    lock_reason: 'DLL',
+    permanent_lock: 0,
+    admin_frozen: 1
+  }), false);
+});
+
 test('account performance summaries include active and soft DLL-locked accounts only', () => {
   const accountsStart = appHtml.indexOf('<section id="accountsView"');
   const accountsEnd = appHtml.indexOf('<section id="copyTradingView"', accountsStart);
